@@ -1,0 +1,7 @@
+{
+  "name": "SonicPure AI",
+  "description": "A high-fidelity AI-powered audio noise remover that cleans background noise while preserving the natural tone of your voice and soundscapes. Built with Gemini 2.5 Native Audio.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
