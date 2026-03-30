@@ -135,3 +135,66 @@ export async function extractAudioFromVideo(file: File): Promise<Blob> {
   const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
   return audioBufferToWav(audioBuffer);
 }
+
+/**
+ * Get audio duration in seconds from a Blob
+ */
+export async function getAudioDuration(blob: Blob): Promise<number> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioCtx = new AudioContext();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  return audioBuffer.duration;
+}
+
+/**
+ * Convert any audio blob (WebM, MP3, M4A, etc.) to WAV.
+ * Audo AI and other APIs often require WAV for reliable parsing.
+ */
+export async function convertToWav(blob: Blob): Promise<Blob> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioCtx = new AudioContext();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+  return audioBufferToWav(audioBuffer);
+}
+
+/**
+ * Convert an audio blob to MP3 format. Used for downloads.
+ */
+export async function convertBlobToMp3(blob: Blob): Promise<Blob> {
+  const { Mp3Encoder } = await import('lamejs');
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioCtx = new AudioContext();
+  const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  const left = audioBuffer.getChannelData(0);
+  const right = numChannels > 1 ? audioBuffer.getChannelData(1) : left;
+
+  const floatToInt16 = (float32: Float32Array): Int16Array => {
+    const int16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return int16;
+  };
+
+  const leftInt16 = floatToInt16(left);
+  const rightInt16 = floatToInt16(right);
+
+  const mp3enc = new Mp3Encoder(numChannels, sampleRate, 128);
+  const mp3Data: Int8Array[] = [];
+  const chunkSize = 1152;
+
+  for (let i = 0; i < leftInt16.length; i += chunkSize) {
+    const leftChunk = leftInt16.subarray(i, Math.min(i + chunkSize, leftInt16.length));
+    const rightChunk = rightInt16.subarray(i, Math.min(i + chunkSize, rightInt16.length));
+    const mp3buf = mp3enc.encodeBuffer(leftChunk, rightChunk);
+    if (mp3buf.length > 0) mp3Data.push(mp3buf);
+  }
+  const flush = mp3enc.flush();
+  if (flush.length > 0) mp3Data.push(flush);
+
+  return new Blob(mp3Data, { type: 'audio/mp3' });
+}

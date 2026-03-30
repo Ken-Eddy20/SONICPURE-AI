@@ -5,22 +5,38 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "npm run dev:all",
+    "dev:server": "node server/index.js",
+    "dev:all": "concurrently \"npm run dev:server\" \"npm run dev\"",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^1.38.0",
+    "cloudinary": "^2.9.0",
+    "cors": "^2.8.5",
     "d3": "^7.9.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "ffmpeg-static": "^5.3.0",
     "firebase": "^12.10.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "lamejs": "^1.2.1",
     "lucide-react": "^0.563.0",
     "motion": "^12.36.0",
+    "multer": "^1.4.5-lts.1",
+    "music-metadata": "^11.12.3",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.1.0",
+    "firebase-admin": "^13.7.0",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

@@ -4,6 +4,11 @@ export interface AudioState {
   processedBlob: Blob | null;
   isProcessing: boolean;
   intensity: number;
+  autoBalance?: boolean;
+  autoGain?: boolean;
+  dereverberation?: boolean;
+  audioRestoration?: boolean;
+  aggressive?: boolean;
 }
 
 export enum ProcessIntensity {

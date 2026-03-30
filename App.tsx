@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Upload, 
@@ -13,8 +13,7 @@ import {
   AlertCircle,
   Settings2,
   CheckCircle2,
-  AudioLines,
-  Sparkles,
+  Coins,
   Activity,
   Headphones, 
   Video, 
@@ -33,19 +32,26 @@ import {
   Moon,
   ChevronDown,
   ChevronUp,
+  User as UserIcon,
+  LogOut,
   Twitter,
   Github,
   Linkedin,
   Mail
 } from 'lucide-react';
 import { AudioState, AudioMetadata } from './types';
-import { formatBytes, extractAudioFromVideo } from './services/audioUtils';
-import { processAudioWithGemini } from './services/geminiService';
+import { formatBytes, extractAudioFromVideo, getAudioDuration, convertBlobToMp3 } from './services/audioUtils';
+import { calculateCreditsForProcessing } from './services/creditsUtils';
+import { processAudioWithAudo } from './services/audoService';
 import Waveform from './components/Waveform';
 import AuthModal from './components/AuthModal';
+import SubscriptionModal from './components/SubscriptionModal';
+import { type SubscriptionTier } from './constants/subscriptionPlans';
+import PaymentPage from './components/PaymentPage';
+import AudioUploader from './components/AudioUploader';
 import { auth, db } from './firebase';
 import { signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 
 const NOISE_TYPES = [
   { name: 'Background Audio', icon: <Waves className="w-5 h-5" /> },
@@ -93,6 +99,11 @@ const App: React.FC = () => {
     processedBlob: null,
     isProcessing: false,
     intensity: 50,
+    autoBalance: false,
+    autoGain: false,
+    dereverberation: false,
+    audioRestoration: false,
+    aggressive: true,
   });
   const [metadata, setMetadata] = useState<AudioMetadata | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -104,7 +115,37 @@ const App: React.FC = () => {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
+  const [subscriptionTier, setSubscriptionTier] = useState<SubscriptionTier>('payg');
+  const [showPaymentPage, setShowPaymentPage] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+
+  const maxIntensity = userTier === 'free' ? 80 : 100;
+
+  const openSubscriptionModal = (tier: SubscriptionTier) => {
+    setSubscriptionTier(tier);
+    setShowSubscriptionModal(true);
+  };
+
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
+        setShowProfileMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleCheckout = (tier: SubscriptionTier) => {
+    setSubscriptionTier(tier);
+    setShowPaymentPage(true);
+  };
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   React.useEffect(() => {
@@ -123,13 +164,23 @@ const App: React.FC = () => {
         try {
           const docSnap = await getDoc(userRef);
           if (!docSnap.exists()) {
+            let displayName = user.displayName;
+            if (!displayName && user.email) {
+              displayName = user.email.split('@')[0];
+            }
+
             await setDoc(userRef, {
-              uid: user.uid,
-              email: user.email,
-              credits: 150,
-              role: 'user',
-              tier: 'free',
-              createdAt: serverTimestamp()
+              email: user.email || '',
+              displayName: displayName || 'Anonymous User',
+              plan: 'free',
+              credits: 50,
+              creditsUsedThisMonth: 0,
+              dailyEnhancesUsed: 0,
+              dailyEnhancesResetAt: serverTimestamp(),
+              createdAt: serverTimestamp(),
+              billingRenewDate: serverTimestamp(),
+              paystackCustomerId: null,
+              isActive: true,
             });
           }
         } catch (err) {
@@ -141,8 +192,9 @@ const App: React.FC = () => {
 
       const unsubscribe = onSnapshot(userRef, (docSnap) => {
         if (docSnap.exists()) {
-          setCredits(docSnap.data().credits);
-          setUserTier(docSnap.data().tier || 'free');
+          const data = docSnap.data();
+          setCredits(data.credits ?? 0);
+          setUserTier(data.plan || 'free');
         }
       }, (err) => {
         console.error("Firestore Error: ", err);
@@ -183,6 +235,50 @@ const App: React.FC = () => {
 
   const toggleTheme = () => setIsDarkMode(!isDarkMode);
 
+  const handleStartRecording = async () => {
+    try {
+      setError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+        if (chunks.length === 0) {
+          setError('No audio recorded.');
+          return;
+        }
+        const blob = new Blob(chunks, { type: mimeType });
+        setAudioState((prev) => ({ ...prev, originalBlob: blob, processedBlob: null }));
+        let durationSec = 0;
+        try {
+          durationSec = await getAudioDuration(blob);
+        } catch (_) {}
+        setMetadata({ name: 'recording.webm', size: formatBytes(blob.size), duration: durationSec });
+      };
+      recorder.start(1000);
+      setIsRecording(true);
+    } catch (err: any) {
+      setError(err.message || 'Microphone access denied. Please allow mic permission.');
+    }
+  };
+
+  const handleStopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+    }
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -217,10 +313,16 @@ const App: React.FC = () => {
         }
         
         setAudioState(prev => ({ ...prev, originalBlob: blob, processedBlob: null, isProcessing: false }));
+        let durationSec = 0;
+        try {
+          durationSec = await getAudioDuration(blob);
+        } catch (_) {
+          /* fallback to 0 */
+        }
         setMetadata({
           name: file.name,
           size: formatBytes(file.size),
-          duration: 0, // In a real app, calculate duration
+          duration: durationSec,
         });
       } catch (err) {
         console.error("Error extracting audio:", err);
@@ -238,20 +340,41 @@ const App: React.FC = () => {
       setPlayingAudio(null);
     }
 
+    const durationSeconds = metadata?.duration ?? 0;
+    const baseCredits = calculateCreditsForProcessing(durationSeconds, audioState.intensity);
+    const creditsNeeded = audioState.aggressive ? baseCredits * 2 : baseCredits;
+
+    if (user && credits !== null && credits < creditsNeeded) {
+      setError(`Insufficient credits. This job requires ${creditsNeeded} credits. You have ${credits}. Upgrade your plan for more credits.`);
+      return;
+    }
+
     setAudioState(prev => ({ ...prev, isProcessing: true }));
     setError(null);
 
     try {
-      const { cleanedAudioBytes } = await processAudioWithGemini(
+      const options = {
+        intensity: Math.min(audioState.intensity, maxIntensity),
+        aggressive: audioState.aggressive,
+        autoBalance: (userTier === 'pro' || userTier === 'unlimited') && audioState.autoBalance,
+        autoGain: (userTier === 'pro' || userTier === 'unlimited') && audioState.autoGain,
+        dereverberation: userTier === 'unlimited' && audioState.dereverberation,
+        audioRestoration: userTier === 'unlimited' && audioState.audioRestoration,
+      };
+      const { cleanedAudioBlob } = await processAudioWithAudo(
         audioState.originalBlob,
-        audioState.intensity
+        options,
+        (percent) => { /* could show progress: setProcessingPercent(percent); */ }
       );
+      setAudioState(prev => ({ ...prev, processedBlob: cleanedAudioBlob, isProcessing: false }));
 
-      // In a real environment, you'd want to wrap this in a WAV container or similar 
-      // but for this demo using Gemini 2.5 response we create a blob from the PCM bytes.
-      // Note: Decoding PCM correctly requires metadata. Here we assume standard result.
-      const blob = new Blob([cleanedAudioBytes], { type: 'audio/wav' });
-      setAudioState(prev => ({ ...prev, processedBlob: blob, isProcessing: false }));
+      if (user && creditsNeeded > 0) {
+        const userRef = doc(db, 'users', user.uid);
+        const snap = await getDoc(userRef);
+        const currentCredits = snap.exists() ? (snap.data()?.credits ?? 0) : 0;
+        const newCredits = Math.max(0, currentCredits - creditsNeeded);
+        await updateDoc(userRef, { credits: newCredits });
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to process audio. Please try again.');
       setAudioState(prev => ({ ...prev, isProcessing: false }));
@@ -280,6 +403,11 @@ const App: React.FC = () => {
       processedBlob: null,
       isProcessing: false,
       intensity: 50,
+      autoBalance: false,
+      autoGain: false,
+      dereverberation: false,
+      audioRestoration: false,
+      aggressive: true,
     });
     setMetadata(null);
     setError(null);
@@ -290,14 +418,28 @@ const App: React.FC = () => {
     }
   };
 
-  const downloadProcessed = () => {
+  const downloadProcessed = async () => {
     if (!audioState.processedBlob) return;
-    const url = URL.createObjectURL(audioState.processedBlob);
+    const mp3Blob = await convertBlobToMp3(audioState.processedBlob);
+    const baseName = metadata?.name?.replace(/\.[^/.]+$/, '') || 'cleaned';
+    const url = URL.createObjectURL(mp3Blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sonicpure_${metadata?.name || 'cleaned.wav'}`;
+    a.download = `sonicpure_${baseName}.mp3`;
     a.click();
+    URL.revokeObjectURL(url);
   };
+
+  if (showPaymentPage) {
+    return (
+      <PaymentPage
+        tier={subscriptionTier}
+        onBack={() => setShowPaymentPage(false)}
+        userEmail={user?.email ?? undefined}
+        onPaymentSuccess={() => setShowPaymentPage(false)}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-[#0a0a0a] text-gray-900 dark:text-white selection:bg-indigo-500/30 relative overflow-hidden transition-colors duration-300">
@@ -321,9 +463,7 @@ const App: React.FC = () => {
             animate={{ opacity: 1, x: 0 }}
             className="flex items-center gap-3"
           >
-            <div className="p-2 bg-indigo-600 rounded-xl shadow-lg shadow-indigo-500/20">
-              <AudioLines className="w-6 h-6 text-white" />
-            </div>
+            <img src="/logo.png" alt="" className="h-12 w-12 object-contain" />
             <span className="font-bold text-xl tracking-tight text-gray-900 dark:text-white">SonicPure <span className="text-indigo-600 dark:text-indigo-400">AI</span></span>
           </motion.div>
           <motion.div 
@@ -341,14 +481,53 @@ const App: React.FC = () => {
             {user ? (
               <div className="flex items-center gap-4">
                 <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 rounded-full">
-                  <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <Coins className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
                   <span className="text-indigo-700 dark:text-indigo-300 font-bold">{credits !== null ? credits : '...'} <span className="font-medium text-xs">credits</span></span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.email}&background=random`} alt="Avatar" className="w-8 h-8 rounded-full border border-gray-200 dark:border-white/10" referrerPolicy="no-referrer" />
-                  <button onClick={handleSignOut} className="hidden sm:block hover:text-gray-900 dark:hover:text-white transition-colors font-medium text-sm">
-                    Sign Out
+                <div className="relative" ref={profileMenuRef}>
+                  <button
+                    onClick={() => setShowProfileMenu(!showProfileMenu)}
+                    className="flex items-center gap-2 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
+                  >
+                    <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.email}&background=random`} alt="Avatar" className="w-8 h-8 rounded-full border border-gray-200 dark:border-white/10" referrerPolicy="no-referrer" />
+                    <ChevronDown className={`w-4 h-4 text-gray-500 dark:text-gray-400 transition-transform ${showProfileMenu ? 'rotate-180' : ''}`} />
                   </button>
+                  <AnimatePresence>
+                    {showProfileMenu && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -8, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                        className="absolute right-0 mt-2 w-56 py-2 rounded-2xl bg-white dark:bg-[#151619] border border-gray-200 dark:border-white/10 shadow-xl z-50 overflow-hidden"
+                      >
+                        <div className="px-4 py-3 border-b border-gray-200 dark:border-white/10">
+                          <p className="font-medium text-gray-900 dark:text-white truncate">{user.displayName || user.email?.split('@')[0] || 'User'}</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user.email}</p>
+                        </div>
+                        <button
+                          onClick={() => { setShowProfileMenu(false); openSubscriptionModal('payg'); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 text-sm"
+                        >
+                          <Coins className="w-4 h-4 text-indigo-500" />
+                          Upgrade / Buy Credits
+                        </button>
+                        <button
+                          onClick={() => { setShowProfileMenu(false); /* Could add account/settings page */ }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 text-sm"
+                        >
+                          <UserIcon className="w-4 h-4" />
+                          Account
+                        </button>
+                        <button
+                          onClick={() => { setShowProfileMenu(false); handleSignOut(); }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-red-50 dark:hover:bg-red-500/10 text-red-600 dark:text-red-400 text-sm"
+                        >
+                          <LogOut className="w-4 h-4" />
+                          Sign Out
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
             ) : (
@@ -369,6 +548,15 @@ const App: React.FC = () => {
         isOpen={showAuthModal} 
         onClose={() => setShowAuthModal(false)} 
         initialMode={authMode} 
+      />
+
+      <SubscriptionModal 
+        isOpen={showSubscriptionModal} 
+        onClose={() => setShowSubscriptionModal(false)} 
+        tier={subscriptionTier}
+        isAuthenticated={!!user}
+        onSignIn={() => { setAuthMode('signin'); setShowAuthModal(true); }}
+        onCheckout={handleCheckout}
       />
 
       <main className="max-w-7xl mx-auto px-6 py-16 relative z-10">
@@ -403,7 +591,7 @@ const App: React.FC = () => {
                   <CheckCircle2 className="w-4 h-4 text-emerald-500" /> No credit card required
                 </div>
                 <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-white/10">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Free 150 credits
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Free 50 credits
                 </div>
                 <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-white/10">
                   <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Secure processing
@@ -419,25 +607,48 @@ const App: React.FC = () => {
               className="bg-white dark:bg-white/[0.02] backdrop-blur-xl rounded-[2.5rem] p-8 sm:p-12 border border-gray-200 dark:border-white/10 shadow-xl shadow-gray-200/50 dark:shadow-2xl dark:shadow-black/50"
             >
           {!audioState.originalBlob ? (
-            <div className="flex flex-col items-center justify-center border-2 border-dashed border-gray-300 dark:border-white/10 rounded-2xl py-20 bg-gray-50 hover:bg-gray-100 dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-all group relative overflow-hidden">
-              <input
-                type="file"
-                className="absolute inset-0 opacity-0 cursor-pointer"
-                onChange={handleFileUpload}
-                accept={userTier === 'pro' || userTier === 'unlimited' ? "audio/*,video/*" : "audio/*"}
+            <div className="space-y-6">
+              <AudioUploader
+                onUploadSuccess={async (data) => {
+                  try {
+                    const url = data.extractedAudioUrl || data.originalFileUrl;
+                    const res = await fetch(url);
+                    const blob = await res.blob();
+                    setAudioState(prev => ({ ...prev, originalBlob: blob, processedBlob: null }));
+                    let durationSec = 0;
+                    try { durationSec = await getAudioDuration(blob); } catch {}
+                    const name = url.split('/').pop() || 'uploaded_audio';
+                    setMetadata({ name, size: formatBytes(blob.size), duration: durationSec });
+                  } catch (err) {
+                    console.error('Error loading uploaded file:', err);
+                    setError('Upload succeeded but failed to load the audio for processing.');
+                  }
+                }}
               />
-              <div className="p-5 bg-indigo-50 dark:bg-indigo-500/10 rounded-full mb-6 group-hover:scale-110 transition-transform">
-                <Upload className="w-8 h-8 text-indigo-600 dark:text-indigo-500" />
-              </div>
-              <h3 className="text-xl font-medium mb-2">Upload Audio {userTier === 'pro' || userTier === 'unlimited' ? 'or Video' : ''} Source</h3>
-              <p className="text-gray-500 dark:text-white/40 text-sm">
-                {userTier === 'pro' || userTier === 'unlimited' ? 'MP3, WAV, AAC, MP4, WEBM (Max 50MB)' : 'MP3, WAV, or AAC (Max 50MB)'}
-              </p>
-              <div className="mt-8 flex gap-3">
-                 <button className="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 rounded-lg text-sm border border-gray-200 dark:border-white/10 transition-colors">
-                   <Mic className="w-4 h-4" />
-                   Record
-                 </button>
+
+              {/* Record live option */}
+              <div className="flex justify-center">
+                <div className="flex gap-3">
+                  {!isRecording ? (
+                    <button
+                      type="button"
+                      onClick={handleStartRecording}
+                      className="flex items-center gap-2 px-4 py-2 bg-indigo-100 dark:bg-indigo-500/20 hover:bg-indigo-200 dark:hover:bg-indigo-500/30 rounded-lg text-sm border border-indigo-200 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-300 font-medium transition-colors"
+                    >
+                      <Mic className="w-4 h-4" />
+                      Or record live
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleStopRecording}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-100 dark:bg-red-500/20 hover:bg-red-200 dark:hover:bg-red-500/30 rounded-lg text-sm border border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-300 font-medium transition-colors animate-pulse"
+                    >
+                      <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                      Stop recording
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           ) : (
@@ -520,14 +731,19 @@ const App: React.FC = () => {
                         <Settings2 className="w-4 h-4 text-gray-600 dark:text-white/60" />
                         Noise Removal Intensity
                       </div>
-                      <span className="text-sm font-mono text-indigo-600 dark:text-indigo-400">{audioState.intensity}%</span>
+                      <span className="text-sm font-mono text-indigo-600 dark:text-indigo-400">
+                        {Math.min(audioState.intensity, maxIntensity)}%
+                        {userTier === 'free' && maxIntensity === 80 && (
+                          <span className="ml-1 text-xs text-amber-600 dark:text-amber-400" title="Free tier limited to 80%">(max)</span>
+                        )}
+                      </span>
                     </div>
                     <input
                       type="range"
                       min="0"
-                      max="100"
-                      value={audioState.intensity}
-                      onChange={(e) => setAudioState(prev => ({ ...prev, intensity: parseInt(e.target.value) }))}
+                      max={100}
+                      value={Math.min(audioState.intensity, maxIntensity)}
+                      onChange={(e) => setAudioState(prev => ({ ...prev, intensity: Math.min(parseInt(e.target.value), maxIntensity) }))}
                       className="w-full h-1.5 bg-gray-200 dark:bg-white/10 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                       disabled={audioState.isProcessing}
                     />
@@ -535,7 +751,79 @@ const App: React.FC = () => {
                       <span>Natural</span>
                       <span>Balanced</span>
                       <span>Isolated</span>
+                      {userTier === 'free' && (
+                        <span className="text-amber-600/80 dark:text-amber-400/80 normal-case">Free: max 80%</span>
+                      )}
                     </div>
+
+                    <label className="flex items-center gap-2 mt-4 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!!audioState.aggressive}
+                        onChange={(e) => setAudioState(prev => ({ ...prev, aggressive: e.target.checked }))}
+                        className="rounded border-gray-300 dark:border-white/20"
+                      />
+                      <span className="text-sm font-medium">Aggressive mode</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400">(double pass — stronger reduction, 2× credits)</span>
+                    </label>
+
+                    {/* Pro+ / Unlimited enhancement toggles */}
+                    {(userTier === 'pro' || userTier === 'unlimited') && (
+                      <div className="space-y-3 pt-4 border-t border-gray-200 dark:border-white/10">
+                        <p className="text-xs font-medium text-gray-600 dark:text-gray-400 uppercase tracking-wider">Enhancement options</p>
+                        <div className="flex flex-wrap gap-4">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!audioState.autoBalance}
+                              onChange={(e) => setAudioState(prev => ({ ...prev, autoBalance: e.target.checked }))}
+                              className="rounded border-gray-300 dark:border-white/20"
+                            />
+                            <span className="text-sm">Auto balance</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={!!audioState.autoGain}
+                              onChange={(e) => setAudioState(prev => ({ ...prev, autoGain: e.target.checked }))}
+                              className="rounded border-gray-300 dark:border-white/20"
+                            />
+                            <span className="text-sm">Auto gain</span>
+                          </label>
+                          {userTier === 'unlimited' && (
+                            <>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={!!audioState.dereverberation}
+                                  onChange={(e) => setAudioState(prev => ({ ...prev, dereverberation: e.target.checked }))}
+                                  className="rounded border-gray-300 dark:border-white/20"
+                                />
+                                <span className="text-sm">Dereverberation</span>
+                              </label>
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={!!audioState.audioRestoration}
+                                  onChange={(e) => setAudioState(prev => ({ ...prev, audioRestoration: e.target.checked }))}
+                                  className="rounded border-gray-300 dark:border-white/20"
+                                />
+                                <span className="text-sm">Audio restoration</span>
+                              </label>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {user && metadata && (
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        ~{(audioState.aggressive ? 2 : 1) * calculateCreditsForProcessing(metadata.duration, Math.min(audioState.intensity, maxIntensity))} credits for this job
+                        {metadata.duration > 0 && (
+                          <span className="text-gray-400 dark:text-gray-500"> • {Math.ceil(metadata.duration / 60)} min</span>
+                        )}
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex gap-3 shrink-0">
@@ -690,7 +978,10 @@ const App: React.FC = () => {
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 30 mins max audio length</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> High priority processing</li>
           </ul>
-          <button className="w-full py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-colors shadow-lg shadow-indigo-500/20">
+          <button 
+            onClick={() => openSubscriptionModal('payg')}
+            className="w-full py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-colors shadow-lg shadow-indigo-500/20"
+          >
             Buy Credits
           </button>
         </div>
@@ -709,7 +1000,10 @@ const App: React.FC = () => {
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 50 mins max audio length</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Advanced noise profiles</li>
           </ul>
-          <button className="w-full py-4 rounded-2xl bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-900 dark:text-white font-semibold transition-colors border border-gray-200 dark:border-white/10">
+          <button 
+            onClick={() => openSubscriptionModal('pro')}
+            className="w-full py-4 rounded-2xl bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-900 dark:text-white font-semibold transition-colors border border-gray-200 dark:border-white/10"
+          >
             Subscribe Now
           </button>
         </div>
@@ -730,7 +1024,10 @@ const App: React.FC = () => {
               <span className="text-5xl font-extrabold">$60</span>
               <span className="text-gray-500 dark:text-white/50">/month</span>
             </div>
-            <button className="px-8 py-4 rounded-2xl bg-gray-900 dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-white/90 font-bold transition-colors shadow-xl">
+            <button 
+              onClick={() => openSubscriptionModal('unlimited')}
+              className="px-8 py-4 rounded-2xl bg-gray-900 dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-white/90 font-bold transition-colors shadow-xl"
+            >
               Get Unlimited
             </button>
           </div>
@@ -948,9 +1245,7 @@ const App: React.FC = () => {
         <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 md:grid-cols-4 gap-12">
           <div className="col-span-1 md:col-span-2">
             <div className="flex items-center gap-2 mb-6">
-              <div className="p-1.5 bg-indigo-600 rounded-lg">
-                <Volume2 className="w-5 h-5 text-white" />
-              </div>
+              <img src="/logo.png" alt="" className="h-9 w-9 object-contain" />
               <span className="font-bold text-lg tracking-tight text-gray-900 dark:text-white">SonicPure <span className="text-indigo-500">AI</span></span>
             </div>
             <p className="text-gray-500 dark:text-gray-400 text-sm max-w-sm leading-relaxed mb-6">

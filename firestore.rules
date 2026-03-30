@@ -1,89 +1,42 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // ===============================================================
-    // Assumed Data Model
-    // ===============================================================
-    //
-    // Collection: users
-    // Document ID: {userId}
-    // Fields:
-    //   - uid: string (required) - The user's unique ID
-    //   - email: string (required) - The user's email address
-    //   - credits: number (required) - The user's available credits
-    //   - role: string (required) - The user's role (e.g., 'user', 'admin')
-    //   - tier: string (required) - The user's subscription tier (e.g., 'free', 'pro', 'unlimited')
-    //   - createdAt: timestamp (required) - When the user account was created
-    //
-    // ===============================================================
 
-    // ===============================================================
-    // Helper Functions
-    // ===============================================================
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
-    }
-
-    function isDocOwner() {
-      return isAuthenticated() && request.auth.uid == resource.data.uid;
-    }
-
-    function uidUnchanged() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
-    }
-
-    function uidNotModified() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
-    }
-
-    function hasRequiredFields(fields) {
-      return request.resource.data.keys().hasAll(fields);
-    }
-
-    function hasOnlyAllowedFields(fields) {
-      return request.resource.data.keys().hasOnly(fields);
-    }
-
-    function isValidEmail(email) {
-      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
-    }
-
-    function isAdmin() {
-      return isAuthenticated() &&
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
-         (request.auth.token.email == "kennedyasiedu2000@gmail.com" && request.auth.token.email_verified == true));
-    }
-
-    // Domain Validators
-    function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'email', 'credits', 'role', 'tier', 'createdAt']) &&
-             data.uid is string && data.uid.size() > 0 && data.uid.size() < 128 &&
-             data.email is string && isValidEmail(data.email) && data.email.size() < 256 &&
-             data.credits is number && data.credits >= 0 &&
-             data.role in ['user', 'admin'] &&
-             data.tier in ['free', 'pro', 'unlimited'] &&
-             data.createdAt is timestamp;
+    match /creditPlans/{planId} {
+      allow read: if true;
     }
 
     match /users/{userId} {
-      allow read: if isOwner(userId) || isAdmin();
-      
-      allow create: if isAuthenticated() && 
-                    isOwner(userId) && 
-                    isValidUser(request.resource.data) && 
-                    request.resource.data.uid == userId &&
-                    request.resource.data.role == 'user' &&
-                    request.resource.data.tier == 'free' &&
-                    request.resource.data.credits == 150;
-                    
-      allow update: if isAdmin() && isValidUser(request.resource.data) && uidNotModified();
-      
-      allow delete: if isAdmin();
+      allow read: if request.auth != null && request.auth.uid == userId;
+
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.plan in ['free', 'payg', 'pro', 'unlimited']
+                    && request.resource.data.credits is number
+                    && request.resource.data.credits >= 0;
+
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['credits', 'creditsUsedThisMonth', 'dailyEnhancesUsed', 'dailyEnhancesResetAt'])
+                    && request.resource.data.credits is number
+                    && request.resource.data.credits >= 0;
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /usageLogs/{logId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+
+    match /audioFiles/{fileId} {
+      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update: if request.auth != null && resource.data.userId == request.auth.uid;
     }
   }
 }
