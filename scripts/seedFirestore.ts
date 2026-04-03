@@ -31,6 +31,7 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     multipleUploads: false,
     advancedNoiseProfiles: false,
     isActive: true,
+    qualityLevel: 80,
   },
   payg: {
     planId: 'payg',
@@ -48,6 +49,7 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     multipleUploads: false,
     advancedNoiseProfiles: false,
     isActive: true,
+    qualityLevel: 80,
   },
   pro: {
     planId: 'pro',
@@ -64,6 +66,7 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     multipleUploads: false,
     advancedNoiseProfiles: true,
     isActive: true,
+    qualityLevel: 100,
   },
   unlimited: {
     planId: 'unlimited',
@@ -80,6 +83,7 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     multipleUploads: true,
     advancedNoiseProfiles: true,
     isActive: true,
+    qualityLevel: 100,
   },
 };
 

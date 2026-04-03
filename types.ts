@@ -3,12 +3,13 @@ export interface AudioState {
   originalBlob: Blob | null;
   processedBlob: Blob | null;
   isProcessing: boolean;
-  intensity: number;
-  autoBalance?: boolean;
-  autoGain?: boolean;
-  dereverberation?: boolean;
-  audioRestoration?: boolean;
-  aggressive?: boolean;
+  removeNoise: boolean;
+  fillers: boolean;
+  stutters: boolean;
+  mouthSounds: boolean;
+  hesitations: boolean;
+  breath: boolean;
+  normalize: boolean;
 }
 
 export enum ProcessIntensity {

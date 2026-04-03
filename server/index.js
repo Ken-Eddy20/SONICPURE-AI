@@ -13,11 +13,11 @@ import { adminAuth, adminDb } from '../lib/firebaseAdmin.js';
 import { uploadAudio, saveProcessedAudio, saveExtractedAudio, deleteAudio } from '../lib/cloudinary.js';
 import { extractAudioFromVideo } from '../lib/extractAudio.js';
 import { parseBuffer } from 'music-metadata';
+import { processAudioCleaning, getJobStatus, deleteCleanvoiceJob } from './lib/cleanvoice.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
-const AUDO_API_BASE = 'https://api.audo.ai/v1';
 
 const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
 const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.webm'];
@@ -32,154 +32,21 @@ app.use((req, res, next) => {
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 60 * 1024 * 1024 } }); // 60MB
 
-function getApiKey() {
-  const key = process.env.AUDO_API_KEY;
-  if (!key) {
-    throw new Error('AUDO_API_KEY not set in server/.env');
-  }
-  return key;
-}
-
-async function pollUntilSucceeded(jobId) {
-  const apiKey = getApiKey();
-  const maxAttempts = 120;
-  let attempts = 0;
-
-  while (attempts < maxAttempts) {
-    const res = await fetch(`${AUDO_API_BASE}/remove-noise/${jobId}/status`, {
-      headers: { 'x-api-key': apiKey },
-    });
-    const data = await res.json();
-
-    if (data.state === 'succeeded' && data.downloadPath) {
-      return data.downloadPath;
-    }
-    if (data.state === 'failed') {
-      throw new Error(data.reason || 'Audo AI processing failed. Check your API key in server/.env');
-    }
-
-    await new Promise((r) => setTimeout(r, 1000));
-    attempts++;
-  }
-  throw new Error('Processing timed out');
-}
-
 app.get('/', (req, res) => {
   const acceptsHtml = req.headers.accept?.includes('text/html');
   if (acceptsHtml) {
     res.send(`<!DOCTYPE html><html><head><title>SonicPure API</title></head><body style="font-family:sans-serif;padding:2rem">
       <h1>SonicPure API is running</h1>
       <p>Use the main app at <a href="http://localhost:3000">http://localhost:3000</a></p>
-      <p><strong>Endpoints:</strong> POST /api/process-audio</p>
+      <p><strong>Endpoints:</strong> POST /api/audio/process</p>
     </body></html>`);
   } else {
-    res.json({ status: 'ok', message: 'SonicPure API is running', endpoints: ['POST /api/process-audio'] });
+    res.json({ status: 'ok', message: 'SonicPure API is running', endpoints: ['POST /api/audio/process'] });
   }
 });
 
 app.get('/api', (req, res) => {
-  res.json({ status: 'ok', message: 'SonicPure API', endpoints: { 'POST /api/process-audio': 'Process audio for noise removal' } });
-});
-
-app.post('/api/process-audio', upload.single('audio'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No audio file provided' });
-    }
-
-    const apiKey = getApiKey();
-    const options = req.body.options ? JSON.parse(req.body.options) : {};
-    const intensity = Math.min(100, Math.max(0, options.intensity ?? 50));
-    const noiseReductionAmount = String(Math.round(intensity));
-
-    // 1. Upload to Audo
-    const formData = new FormData();
-    const blob = new Blob([req.file.buffer], { type: req.file.mimetype || 'audio/wav' });
-    formData.append('file', blob, req.file.originalname || 'audio.wav');
-
-    const uploadRes = await fetch(`${AUDO_API_BASE}/upload`, {
-      method: 'POST',
-      headers: { 'x-api-key': apiKey },
-      body: formData,
-    });
-
-    const uploadText = await uploadRes.text();
-    if (!uploadRes.ok) {
-      let msg = uploadRes.statusText;
-      try {
-        const parsed = JSON.parse(uploadText);
-        msg = parsed.detail || parsed.message || parsed.error || uploadText;
-      } catch {
-        msg = uploadText || uploadRes.statusText;
-      }
-      throw new Error(msg);
-    }
-    let uploadData;
-    try {
-      uploadData = JSON.parse(uploadText);
-    } catch {
-      throw new Error('Invalid response from Audo upload');
-    }
-    const { fileId } = uploadData;
-    if (!fileId) throw new Error('No fileId from Audo');
-
-    // 2. Submit remove-noise
-    const body = {
-      input: fileId,
-      outputExtension: 'wav',
-      noiseReductionAmount,
-    };
-    if (options.autoBalance) body.autoBalance = true;
-    if (options.autoGain) body.autoGain = true;
-    if (options.dereverberation) body.dereverberation = true;
-    if (options.audioRestoration) body.audioRestoration = true;
-
-    const removeRes = await fetch(`${AUDO_API_BASE}/remove-noise`, {
-      method: 'POST',
-      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-
-    const removeText = await removeRes.text();
-    if (!removeRes.ok) {
-      let msg = removeRes.statusText;
-      try {
-        const parsed = JSON.parse(removeText);
-        msg = parsed.detail || parsed.message || parsed.error || removeText;
-      } catch {
-        msg = removeText || removeRes.statusText;
-      }
-      throw new Error(msg);
-    }
-    let removeData;
-    try {
-      removeData = JSON.parse(removeText);
-    } catch {
-      throw new Error('Invalid response from Audo remove-noise');
-    }
-    const { jobId } = removeData;
-    if (!jobId) throw new Error('No jobId from Audo');
-
-    // 3. Poll until done
-    const downloadPath = await pollUntilSucceeded(jobId);
-
-    // 4. Download from Audo
-    const downloadRes = await fetch(`${AUDO_API_BASE}/${downloadPath}`, {
-      headers: { 'x-api-key': apiKey },
-    });
-
-    if (!downloadRes.ok) {
-      throw new Error(`Download failed: ${downloadRes.statusText}`);
-    }
-
-    const buffer = await downloadRes.arrayBuffer();
-
-    res.setHeader('Content-Type', 'audio/wav');
-    res.send(Buffer.from(buffer));
-  } catch (err) {
-    console.error('Process audio error:', err);
-    res.status(500).json({ error: err.message || 'Processing failed' });
-  }
+  res.json({ status: 'ok', message: 'SonicPure API', endpoints: { 'POST /api/audio/process': 'Process audio file using Quality Tiers' } });
 });
 
 // ─── Audio Upload (Cloudinary + Firestore) ───────────────────────
@@ -370,6 +237,187 @@ app.delete('/api/audio/:fileId', async (req, res) => {
     res.status(500).json({ error: err.message || 'Delete failed' });
   }
 });
+
+// ─── Polling Route ───────────────────────────────────────────────
+app.get('/api/audio/status/:fileId', async (req, res) => {
+  try {
+    const decoded = await verifyAuth(req);
+    const userId = decoded.uid;
+    const { fileId } = req.params;
+
+    const docRef = adminDb.collection('audioFiles').doc(fileId);
+    const docSnap = await docRef.get();
+
+    if (!docSnap.exists) {
+       return res.status(404).json({ error: 'File not found' });
+    }
+
+    const data = docSnap.data();
+    if (data.userId !== userId) {
+       return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    res.json({
+       fileId,
+       status: data.status,
+       processedFileUrl: data.processedFileUrl,
+       qualityLevel: data.qualityLevel,
+       creditsUsed: data.creditsUsed || 0,
+       creditsRemaining: data.creditsRemaining || -1,
+    });
+  } catch (err) {
+    console.error('Status check error:', err);
+    if (err.message?.includes('Authorization')) {
+      return res.status(401).json({ error: err.message });
+    }
+    res.status(500).json({ error: err.message || 'Status check failed' });
+  }
+});
+
+// ─── Processing Route ────────────────────────────────────────────
+app.post('/api/audio/process', async (req, res) => {
+  try {
+    const decoded = await verifyAuth(req);
+    const userId = decoded.uid;
+    const { fileId, feature } = req.body;
+
+    if (!fileId || !feature) {
+      return res.status(400).json({ error: 'fileId and feature are required' });
+    }
+
+    // fetch audio file
+    const docRef = adminDb.collection('audioFiles').doc(fileId);
+    const docSnap = await docRef.get();
+    if (!docSnap.exists) {
+      return res.status(404).json({ error: 'Audio file not found' });
+    }
+    const audioData = docSnap.data();
+    
+    if (audioData.userId !== userId) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+    if (audioData.status !== 'uploading') {
+      return res.status(400).json({ error: 'File is already processing or completed.' });
+    }
+
+    // fetch user
+    const userRef = adminDb.collection('users').doc(userId);
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) {
+       return res.status(404).json({ error: 'User not found' });
+    }
+    const userData = userSnap.data();
+    const planName = (userData.plan || 'free').toLowerCase();
+    const isUnlimited = planName === 'unlimited';
+    
+    // fetch plan
+    const planSnap = await adminDb.collection('creditPlans').doc(planName).get();
+    const planData = planSnap.exists ? planSnap.data() : { maxDailyEnhances: 2 };
+
+    const durationSeconds = audioData.durationSeconds || 60; // fallback to 1 min
+    
+    let creditCostPerMinute = 3;
+    if (feature === 'audio_enhancement') creditCostPerMinute = 4;
+    
+    const creditsNeeded = Math.ceil(durationSeconds / 60) * creditCostPerMinute;
+    
+    // validation
+    if (!isUnlimited && (userData.credits || 0) < creditsNeeded) {
+       return res.status(402).json({
+          error: "Insufficient credits",
+          creditsNeeded,
+          creditsAvailable: userData.credits || 0,
+          upgrade: "Top up or upgrade your plan."
+       });
+    }
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const maxDaily = planData.maxDailyEnhances ?? -1;
+    if (maxDaily !== -1) {
+       const logsSnap = await adminDb.collection('usageLogs')
+          .where('userId', '==', userId)
+          .where('createdAt', '>=', todayStart)
+          .get();
+       
+       if (logsSnap.size > maxDaily) {
+          return res.status(429).json({
+             error: "Daily limit reached",
+             upgrade: "Upgrade for unlimited enhancements."
+          });
+       }
+    }
+
+    const qualityLevel = (planName === 'free' || planName === 'payg') ? 80 : 100;
+    
+    await docRef.update({
+       status: 'processing',
+       qualityLevel,
+       creditsUsed: creditsNeeded,
+    });
+
+    // Fire & Forget Processing or Await here (We await due to Cloudinary save reqs inside Express)
+    const targetUrl = audioData.extractedAudioUrl || audioData.originalFileUrl;
+    
+    // Remote process cleanvoice
+    const { processedUrl } = await processAudioCleaning(targetUrl, feature, planName);
+    
+    // Save output back to Cloudinary
+    const bufferRes = await fetch(processedUrl);
+    if (!bufferRes.ok) throw new Error("Failed fetching processed result from cleanvoice");
+    const buffer = await bufferRes.arrayBuffer();
+    
+    const { secure_url, public_id } = await saveProcessedAudio(Buffer.from(buffer), userId);
+
+    const creditsRemaining = isUnlimited ? -1 : ((userData.credits || 0) - creditsNeeded);
+
+    // Save success state
+    await docRef.update({
+        status: 'processed',
+        processedFileUrl: secure_url,
+        processedPublicId: public_id,
+        creditsRemaining,
+    });
+
+    if (!isUnlimited) {
+       await userRef.update({
+           credits: Number(userData.credits || 0) - creditsNeeded,
+           creditsUsedThisMonth: (userData.creditsUsedThisMonth || 0) + creditsNeeded,
+           dailyEnhancesUsed: (userData.dailyEnhancesUsed || 0) + 1
+       });
+    }
+
+    await adminDb.collection('usageLogs').add({
+        userId,
+        feature,
+        fileName: audioData.originalFileName,
+        fileDurationSeconds: durationSeconds,
+        creditsUsed: creditsNeeded,
+        qualityLevel,
+        status: 'completed',
+        createdAt: new Date()
+    });
+
+    res.json({
+        success: true,
+        processedFileUrl: secure_url,
+        creditsUsed: creditsNeeded,
+        creditsRemaining,
+        qualityLevel
+    });
+
+  } catch (err) {
+    console.error('Process handler error:', err);
+    if (req.body.fileId) {
+       await adminDb.collection('audioFiles').doc(req.body.fileId).update({ status: 'failed' });
+    }
+    if (err.message?.includes('Authorization')) {
+      return res.status(401).json({ error: err.message });
+    }
+    res.status(500).json({ error: "Processing failed. No credits were deducted.", message: err.message });
+  }
+});
+
 
 // ─── Paystack Integration ─────────────────────────────────────────
 
@@ -592,8 +640,8 @@ async function applySuccessfulPayment(userId, tier, txData) {
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
   console.log(`SonicPure API server on http://localhost:${PORT} (visit in browser to check)`);
-  if (!process.env.AUDO_API_KEY) {
-    console.warn('WARNING: AUDO_API_KEY not set in server/.env - audio processing will fail');
+  if (!process.env.CLEANVOICE_API_KEY) {
+    console.warn('WARNING: CLEANVOICE_API_KEY not set in server/.env - audio processing will fail');
   }
   if (!process.env.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY.includes('YOUR_SECRET_KEY')) {
     console.warn('WARNING: PAYSTACK_SECRET_KEY not set - payments will not work');
