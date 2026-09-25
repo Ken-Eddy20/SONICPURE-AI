@@ -39,10 +39,10 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     tagline: 'For occasional creators',
     price: 5,
     billingCycle: 'one_time',
-    credits: 150,
+    credits: 130,
     creditsExpire: false,
     isUnlimited: false,
-    maxDailyEnhances: -1,
+    maxDailyEnhances: 4,
     maxAudioLengthMins: 30,
     processingSpeed: 'high_priority',
     extractAudioFromVideo: false,
@@ -57,7 +57,7 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     tagline: 'For professional workflows',
     price: 20,
     billingCycle: 'monthly',
-    credits: 2500,
+    credits: 600,
     isUnlimited: false,
     maxDailyEnhances: -1,
     maxAudioLengthMins: 50,
@@ -68,14 +68,14 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     isActive: true,
     qualityLevel: 100,
   },
-  unlimited: {
-    planId: 'unlimited',
-    name: 'Unlimited Studio',
+  audio_master: {
+    planId: 'audio_master',
+    name: 'Audio Master Studio',
     tagline: 'The ultimate package for studios and heavy users',
     price: 60,
     billingCycle: 'monthly',
-    credits: -1,
-    isUnlimited: true,
+    credits: 2000,
+    isUnlimited: false,
     maxDailyEnhances: -1,
     maxAudioLengthMins: -1,
     processingSpeed: 'highest_tier',
@@ -95,7 +95,8 @@ async function seed() {
     const snapshot = await ref.get();
 
     if (snapshot.exists) {
-      console.log(`  [SKIP] creditPlans/${docId} already exists`);
+      await ref.update(data);
+      console.log(`  [OK]   creditPlans/${docId} updated`);
     } else {
       await ref.set(data);
       console.log(`  [OK]   creditPlans/${docId} created`);

@@ -9,7 +9,7 @@ interface SubscriptionModalProps {
   tier: SubscriptionTier;
   isAuthenticated: boolean;
   onSignIn?: () => void;
-  onCheckout?: (tier: SubscriptionTier) => void;
+  onCheckout?: (tier: SubscriptionTier, customCredits?: number) => void;
 }
 
 export default function SubscriptionModal({
@@ -21,6 +21,9 @@ export default function SubscriptionModal({
   onCheckout,
 }: SubscriptionModalProps) {
   const details = TIER_DETAILS[tier];
+  const [customCredits, setCustomCredits] = React.useState(100);
+  const isPayg = tier === 'payg';
+  const customPrice = (customCredits / 20);
 
   return (
     <AnimatePresence>
@@ -67,9 +70,40 @@ export default function SubscriptionModal({
 
             <div className="mb-8 p-6 rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20">
               <div className="flex items-baseline gap-1 mb-4">
-                <span className="text-4xl font-extrabold text-gray-900 dark:text-white">{details.price}</span>
-                <span className="text-gray-500 dark:text-white/50">{details.period}</span>
+                <span className="text-4xl font-extrabold text-gray-900 dark:text-white">
+                  {isPayg ? `$${customPrice}` : details.price}
+                </span>
+                <span className="text-gray-500 dark:text-white/50">
+                  {isPayg ? `for ${customCredits} credits` : details.period}
+                </span>
               </div>
+
+              {isPayg && (
+                <div className="mb-6">
+                  <label className="block text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest mb-2">
+                    Enter Credit Amount (Min 20)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="20"
+                      step="20"
+                      value={customCredits}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        setCustomCredits(isNaN(val) ? 20 : Math.max(20, val));
+                      }}
+                      className="w-full px-4 py-3 rounded-xl bg-white dark:bg-black/20 border border-indigo-200 dark:border-white/10 text-gray-900 dark:text-white focus:ring-2 focus:ring-indigo-500 transition-all font-bold text-lg"
+                    />
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm">
+                      Credits
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[10px] text-gray-500 dark:text-gray-400">
+                    Calculated at $1 per 20 credits. Least to buy is 20 credits.
+                  </p>
+                </div>
+              )}
               <ul className="space-y-3">
                 {details.features.map((feature, idx) => (
                   <li key={idx} className="flex items-center gap-3 text-sm text-gray-700 dark:text-gray-300">
@@ -91,7 +125,7 @@ export default function SubscriptionModal({
                 <button
                   onClick={() => {
                     onClose();
-                    onCheckout?.(tier);
+                    onCheckout?.(tier, isPayg ? customCredits : undefined);
                   }}
                   className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-semibold shadow-lg shadow-indigo-500/20 transition-all"
                 >

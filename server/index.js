@@ -6,10 +6,14 @@ import dotenv from 'dotenv';
 import express from 'express';
 import multer from 'multer';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
 import path from 'path';
+import util from 'util';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { adminAuth, adminDb } from '../lib/firebaseAdmin.js';
+import admin, { adminAuth, adminDb } from '../lib/firebaseAdmin.js';
 import { uploadAudio, saveProcessedAudio, saveExtractedAudio, deleteAudio } from '../lib/cloudinary.js';
 import { extractAudioFromVideo } from '../lib/extractAudio.js';
 import { parseBuffer } from 'music-metadata';
@@ -17,13 +21,61 @@ import { processAudioCleaning, getJobStatus, deleteCleanvoiceJob } from './lib/c
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '.env') });
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+function diskLog(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  fs.appendFileSync(path.join(__dirname, 'server.log'), line);
+  console.log(msg);
+}
+
+diskLog('[Startup] Cleanvoice Key Loaded: ' + (process.env.CLEANVOICE_API_KEY ? `Present (...${process.env.CLEANVOICE_API_KEY.slice(-4)})` : 'MISSING'));
+
+function formatError(err) {
+  if (!err) return 'Unknown error';
+  if (typeof err === 'string') return err;
+  if (err.message && err.message !== '[object Object]') return err.message;
+  return util.inspect(err, { depth: 2, colors: false });
+}
 
 const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
 const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.webm'];
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
 const app = express();
-app.use(cors({ origin: true }));
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+}));
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many upload or processing attempts. Please wait and try again.' },
+});
+const paymentLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many payment attempts. Please wait and try again.' },
+});
+app.use('/api', apiLimiter);
 app.use((req, res, next) => {
   if (req.path === '/api/paystack/webhook') return next();
   express.json()(req, res, next);
@@ -31,6 +83,49 @@ app.use((req, res, next) => {
 
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 60 * 1024 * 1024 } }); // 60MB
+
+function getQuotaDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function httpError(status, message, extra = {}) {
+  const err = new Error(message);
+  err.status = status;
+  Object.assign(err, extra);
+  return err;
+}
+
+// ─── Exchange Rate Utils ──────────────────────────────────────────
+let cachedRate = {
+  rate: parseFloat(process.env.USD_GHS_CONVERSION_RATE || '12.1'),
+  lastFetched: 0
+};
+
+async function getLiveGhsRate() {
+  const ONE_HOUR = 60 * 60 * 1000;
+  if (Date.now() - cachedRate.lastFetched < ONE_HOUR) {
+    return cachedRate.rate;
+  }
+
+  try {
+    diskLog('[Currency] Fetching live USD/GHS rate...');
+    const response = await fetch('https://open.er-api.com/v6/latest/USD');
+    const data = await response.json();
+    
+    if (data.result === 'success' && data.rates && data.rates.GHS) {
+      cachedRate = {
+        rate: data.rates.GHS,
+        lastFetched: Date.now()
+      };
+      diskLog(`[Currency] Live rate updated: 1 USD = ${cachedRate.rate} GHS`);
+      return cachedRate.rate;
+    }
+  } catch (err) {
+    diskLog('[Currency Error] Failed to fetch live rate, using fallback: ' + err.message);
+  }
+  
+  return cachedRate.rate; // Returns cached version or fallback from env
+}
 
 app.get('/', (req, res) => {
   const acceptsHtml = req.headers.accept?.includes('text/html');
@@ -60,7 +155,7 @@ async function verifyAuth(req) {
   return adminAuth.verifyIdToken(idToken);
 }
 
-app.post('/api/audio/upload', upload.single('audio'), async (req, res) => {
+app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file provided' });
@@ -85,8 +180,17 @@ app.post('/api/audio/upload', upload.single('audio'), async (req, res) => {
 
     // ── Determine file type by extension ──
     const ext = path.extname(req.file.originalname || '').toLowerCase();
-    const isVideo = VIDEO_EXTENSIONS.includes(ext);
-    const isAudio = AUDIO_EXTENSIONS.includes(ext) || req.file.mimetype?.startsWith('audio/');
+    let isVideo = VIDEO_EXTENSIONS.includes(ext);
+    let isAudio = AUDIO_EXTENSIONS.includes(ext) || req.file.mimetype?.startsWith('audio/');
+    
+    // Recordings from microphone might be saved as .mp4 or .webm by certain browsers (like Safari)
+    if (req.file.originalname?.startsWith('recording.')) {
+      isVideo = false;
+      isAudio = true;
+    } else if (ext === '.webm' && req.file.mimetype?.startsWith('audio/')) {
+      isVideo = false;
+    }
+
     if (!isVideo && !isAudio) {
       return res.status(400).json({ error: 'Unsupported file type. Please upload an audio or video file.' });
     }
@@ -98,23 +202,13 @@ app.post('/api/audio/upload', upload.single('audio'), async (req, res) => {
       });
     }
 
-    // ── Daily limit check (query usageLogs for today) ──
     const maxDaily = planData.maxDailyEnhances ?? -1;
-    if (maxDaily !== -1) {
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-
-      const logsSnap = await adminDb
-        .collection('usageLogs')
-        .where('userId', '==', userId)
-        .where('createdAt', '>=', todayStart)
-        .get();
-
-      if (logsSnap.size >= maxDaily) {
-        return res.status(429).json({
-          error: `You have reached your daily upload limit (${maxDaily}/day). Upgrade your plan for unlimited uploads.`,
-        });
-      }
+    const todayKey = getQuotaDayKey();
+    const dailyUsed = userData.dailyEnhancesDate === todayKey ? (userData.dailyEnhancesUsed || 0) : 0;
+    if (maxDaily !== -1 && dailyUsed >= maxDaily) {
+      return res.status(429).json({
+        error: `You have reached your daily upload limit (${maxDaily}/day). Upgrade your plan for more enhancements.`,
+      });
     }
 
     // ── Extract audio from video if needed ──
@@ -172,22 +266,6 @@ app.post('/api/audio/upload', upload.single('audio'), async (req, res) => {
       status: 'uploading',
       createdAt: now,
       expiresAt,
-    });
-
-    // ── Create usageLogs entry ──
-    await adminDb.collection('usageLogs').add({
-      userId,
-      feature,
-      fileName: req.file.originalname || 'audio.wav',
-      fileDurationSeconds: durationSeconds,
-      creditsUsed: 0,
-      status: 'processing',
-      createdAt: now,
-    });
-
-    // ── Increment daily counter on user doc ──
-    await adminDb.collection('users').doc(userId).update({
-      dailyEnhancesUsed: (userData.dailyEnhancesUsed || 0) + 1,
     });
 
     res.json({
@@ -275,146 +353,197 @@ app.get('/api/audio/status/:fileId', async (req, res) => {
 });
 
 // ─── Processing Route ────────────────────────────────────────────
-app.post('/api/audio/process', async (req, res) => {
+app.post('/api/audio/process', uploadLimiter, async (req, res) => {
   try {
     const decoded = await verifyAuth(req);
     const userId = decoded.uid;
     const { fileId, feature } = req.body;
+    diskLog(`[API] Received process request for fileId: ${fileId}, userId: ${userId}`);
 
     if (!fileId || !feature) {
       return res.status(400).json({ error: 'fileId and feature are required' });
     }
 
-    // fetch audio file
     const docRef = adminDb.collection('audioFiles').doc(fileId);
-    const docSnap = await docRef.get();
-    if (!docSnap.exists) {
-      return res.status(404).json({ error: 'Audio file not found' });
-    }
-    const audioData = docSnap.data();
-    
-    if (audioData.userId !== userId) {
-      return res.status(403).json({ error: 'Not authorized' });
-    }
-    if (audioData.status !== 'uploading') {
-      return res.status(400).json({ error: 'File is already processing or completed.' });
-    }
-
-    // fetch user
     const userRef = adminDb.collection('users').doc(userId);
-    const userSnap = await userRef.get();
-    if (!userSnap.exists) {
-       return res.status(404).json({ error: 'User not found' });
-    }
-    const userData = userSnap.data();
-    const planName = (userData.plan || 'free').toLowerCase();
-    const isUnlimited = planName === 'unlimited';
-    
-    // fetch plan
-    const planSnap = await adminDb.collection('creditPlans').doc(planName).get();
-    const planData = planSnap.exists ? planSnap.data() : { maxDailyEnhances: 2 };
+    const reservation = await adminDb.runTransaction(async (transaction) => {
+      const docSnap = await transaction.get(docRef);
+      if (!docSnap.exists) {
+        throw httpError(404, 'Audio file not found');
+      }
 
-    const durationSeconds = audioData.durationSeconds || 60; // fallback to 1 min
-    
-    let creditCostPerMinute = 3;
-    if (feature === 'audio_enhancement') creditCostPerMinute = 4;
-    
-    const creditsNeeded = Math.ceil(durationSeconds / 60) * creditCostPerMinute;
-    
-    // validation
-    if (!isUnlimited && (userData.credits || 0) < creditsNeeded) {
-       return res.status(402).json({
-          error: "Insufficient credits",
+      const audioData = docSnap.data();
+      if (audioData.userId !== userId) {
+        throw httpError(403, 'Not authorized');
+      }
+      if (audioData.status !== 'uploading') {
+        throw httpError(400, 'File is already processing or completed.');
+      }
+
+      const userSnap = await transaction.get(userRef);
+      if (!userSnap.exists) {
+        throw httpError(404, 'User not found');
+      }
+      const userData = userSnap.data();
+      const planName = (userData.plan || 'free').toLowerCase();
+      const isUnlimited = planName === 'audio_master';
+
+      const planRef = adminDb.collection('creditPlans').doc(planName);
+      const planSnap = await transaction.get(planRef);
+      const planData = planSnap.exists ? planSnap.data() : { maxDailyEnhances: 2 };
+
+      const durationSeconds = audioData.durationSeconds || 60;
+      const creditCostPerMinute = feature === 'audio_enhancement' ? 3 : 2;
+      const creditsNeeded = Math.ceil(durationSeconds / 60) * creditCostPerMinute;
+
+      if (!isUnlimited && (userData.credits || 0) < creditsNeeded) {
+        throw httpError(402, 'Insufficient credits', {
           creditsNeeded,
           creditsAvailable: userData.credits || 0,
-          upgrade: "Top up or upgrade your plan."
-       });
-    }
+          upgrade: 'Top up or upgrade your plan.',
+        });
+      }
 
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const maxDaily = planData.maxDailyEnhances ?? -1;
-    if (maxDaily !== -1) {
-       const logsSnap = await adminDb.collection('usageLogs')
-          .where('userId', '==', userId)
-          .where('createdAt', '>=', todayStart)
-          .get();
-       
-       if (logsSnap.size > maxDaily) {
-          return res.status(429).json({
-             error: "Daily limit reached",
-             upgrade: "Upgrade for unlimited enhancements."
-          });
-       }
-    }
+      const todayKey = getQuotaDayKey();
+      const currentDailyUsed = userData.dailyEnhancesDate === todayKey ? (userData.dailyEnhancesUsed || 0) : 0;
+      const maxDaily = planData.maxDailyEnhances ?? -1;
+      if (maxDaily !== -1 && currentDailyUsed >= maxDaily) {
+        throw httpError(429, 'Daily limit reached', {
+          upgrade: 'Upgrade for more enhancements.',
+        });
+      }
 
-    const qualityLevel = (planName === 'free' || planName === 'payg') ? 80 : 100;
-    
-    await docRef.update({
-       status: 'processing',
-       qualityLevel,
-       creditsUsed: creditsNeeded,
+      const qualityLevel = (planName === 'free' || planName === 'payg') ? 80 : 100;
+      const creditsRemaining = isUnlimited ? -1 : Number(userData.credits || 0) - creditsNeeded;
+
+      transaction.update(docRef, {
+        status: 'processing',
+        qualityLevel,
+        creditsUsed: creditsNeeded,
+        creditsRemaining,
+      });
+
+      const userUpdate = {
+        dailyEnhancesDate: todayKey,
+        dailyEnhancesUsed: currentDailyUsed + 1,
+        dailyEnhancesResetAt: new Date(),
+      };
+      if (!isUnlimited) {
+        userUpdate.credits = creditsRemaining;
+        userUpdate.creditsUsedThisMonth = (userData.creditsUsedThisMonth || 0) + creditsNeeded;
+      }
+      transaction.update(userRef, userUpdate);
+
+      return {
+        audioData,
+        planName,
+        isUnlimited,
+        durationSeconds,
+        creditsNeeded,
+        creditsRemaining,
+        qualityLevel,
+      };
     });
+
+    const {
+      audioData,
+      planName,
+      isUnlimited,
+      durationSeconds,
+      creditsNeeded,
+      creditsRemaining,
+      qualityLevel,
+    } = reservation;
 
     // Fire & Forget Processing or Await here (We await due to Cloudinary save reqs inside Express)
     const targetUrl = audioData.extractedAudioUrl || audioData.originalFileUrl;
     
-    // Remote process cleanvoice
-    const { processedUrl } = await processAudioCleaning(targetUrl, feature, planName);
-    
-    // Save output back to Cloudinary
-    const bufferRes = await fetch(processedUrl);
-    if (!bufferRes.ok) throw new Error("Failed fetching processed result from cleanvoice");
-    const buffer = await bufferRes.arrayBuffer();
-    
-    const { secure_url, public_id } = await saveProcessedAudio(Buffer.from(buffer), userId);
-
-    const creditsRemaining = isUnlimited ? -1 : ((userData.credits || 0) - creditsNeeded);
-
-    // Save success state
-    await docRef.update({
-        status: 'processed',
-        processedFileUrl: secure_url,
-        processedPublicId: public_id,
-        creditsRemaining,
-    });
-
-    if (!isUnlimited) {
-       await userRef.update({
-           credits: Number(userData.credits || 0) - creditsNeeded,
-           creditsUsedThisMonth: (userData.creditsUsedThisMonth || 0) + creditsNeeded,
-           dailyEnhancesUsed: (userData.dailyEnhancesUsed || 0) + 1
-       });
-    }
-
-    await adminDb.collection('usageLogs').add({
-        userId,
-        feature,
-        fileName: audioData.originalFileName,
-        fileDurationSeconds: durationSeconds,
-        creditsUsed: creditsNeeded,
-        qualityLevel,
-        status: 'completed',
-        createdAt: new Date()
-    });
-
+    // Respond immediately to prevent browser network timeout handling large files
     res.json({
         success: true,
-        processedFileUrl: secure_url,
-        creditsUsed: creditsNeeded,
-        creditsRemaining,
-        qualityLevel
+        processing: true,
+        message: 'Processing started in the background.'
     });
+
+    (async () => {
+      try {
+        diskLog(`[Background] Starting processing for fileId: ${fileId}, targetUrl: ${targetUrl}`);
+      // ── Verify URL Reachability ──
+      try {
+        const headResponse = await fetch(targetUrl.replace('http://', 'https://'), { method: 'HEAD' });
+        if (!headResponse.ok) {
+          throw new Error(`Audio file not reachable on Cloudinary (Status: ${headResponse.status}). Wait a few seconds or re-upload.`);
+        }
+        diskLog(`[Background] URL verified: ${targetUrl}`);
+      } catch (err) {
+        throw new Error(`Pre-processing reachability check failed: ${err.message}`);
+      }
+
+      // ── Start Cleanvoice Process ──
+      const { processedUrl } = await processAudioCleaning(targetUrl, feature, planName);
+        diskLog(`[Background] Cleanvoice success for fileId: ${fileId}, resultUrl: ${processedUrl}`);
+        
+        // Save output back to Cloudinary
+        const bufferRes = await fetch(processedUrl);
+        if (!bufferRes.ok) throw new Error("Failed fetching processed result from cleanvoice");
+        const buffer = await bufferRes.arrayBuffer();
+        
+        const { secure_url, public_id } = await saveProcessedAudio(Buffer.from(buffer), userId);
+
+        // Save success state
+        await docRef.update({
+            status: 'processed',
+            processedFileUrl: secure_url,
+            processedPublicId: public_id,
+            creditsRemaining,
+        });
+
+        diskLog(`[Background] Firestore update complete for fileId: ${fileId}`);
+
+        await adminDb.collection('usageLogs').add({
+            userId,
+            feature,
+            fileName: audioData.originalFileName,
+            fileDurationSeconds: durationSeconds,
+            creditsUsed: creditsNeeded,
+            qualityLevel,
+            status: 'completed',
+            createdAt: new Date()
+        });
+
+      } catch (backgroundErr) {
+        diskLog(`[Background Error] [fileId: ${fileId}] ` + formatError(backgroundErr));
+        console.error(`[fileId: ${fileId}] Background processing error:`, backgroundErr);
+        const errMsg = formatError(backgroundErr);
+        await docRef.update({ status: 'failed', error: errMsg });
+        const refundUpdate = {
+          dailyEnhancesUsed: admin.firestore.FieldValue.increment(-1),
+        };
+        if (!isUnlimited) {
+          refundUpdate.credits = admin.firestore.FieldValue.increment(creditsNeeded);
+          refundUpdate.creditsUsedThisMonth = admin.firestore.FieldValue.increment(-creditsNeeded);
+        }
+        await userRef.update(refundUpdate);
+      }
+    })();
 
   } catch (err) {
     console.error('Process handler error:', err);
-    if (req.body.fileId) {
+    if (!err.status && req.body.fileId) {
        await adminDb.collection('audioFiles').doc(req.body.fileId).update({ status: 'failed' });
     }
     if (err.message?.includes('Authorization')) {
       return res.status(401).json({ error: err.message });
     }
-    res.status(500).json({ error: "Processing failed. No credits were deducted.", message: err.message });
+    if (err.status) {
+      return res.status(err.status).json({
+        error: err.message,
+        creditsNeeded: err.creditsNeeded,
+        creditsAvailable: err.creditsAvailable,
+        upgrade: err.upgrade,
+      });
+    }
+    res.status(500).json({ error: "Processing failed to start.", message: err.message });
   }
 });
 
@@ -424,9 +553,9 @@ app.post('/api/audio/process', async (req, res) => {
 const PAYSTACK_BASE = 'https://api.paystack.co';
 
 const PLAN_CREDIT_MAP = {
-  payg:      { credits: 150, plan: 'payg' },
-  pro:       { credits: 2500, plan: 'pro' },
-  unlimited: { credits: -1, plan: 'unlimited' },
+  payg:         { credits: 0, plan: 'payg' }, // Credits are now flexible and calculated dynamically
+  pro:          { credits: 600, plan: 'pro' },
+  audio_master: { credits: 2000, plan: 'audio_master' },
 };
 
 function getPaystackSecretKey() {
@@ -451,7 +580,7 @@ async function paystackRequest(endpoint, method = 'GET', body = null) {
   return res.json();
 }
 
-app.post('/api/paystack/initialize', async (req, res) => {
+app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
   try {
     const decoded = await verifyAuth(req);
     const userId = decoded.uid;
@@ -472,20 +601,38 @@ app.post('/api/paystack/initialize', async (req, res) => {
       return res.status(400).json({ error: 'Plan not found' });
     }
     const planData = planSnap.data();
-    const amountInCents = planData.price * 100;
+    
+    let amountInCents = 0;
+    let creditsToAdd = 0;
+
+    if (tier === 'payg') {
+      const customCredits = parseInt(req.body.customCredits || '0');
+      if (isNaN(customCredits) || customCredits < 20) {
+        return res.status(400).json({ error: 'Minimum 20 credits required for Pay As You Go.' });
+      }
+      creditsToAdd = customCredits;
+      amountInCents = (customCredits / 20) * 100;
+    } else {
+      amountInCents = planData.price * 100;
+      creditsToAdd = PLAN_CREDIT_MAP[tier].credits;
+    }
+
+    const liveRate = await getLiveGhsRate();
+    const finalCurrency = process.env.PAYSTACK_CURRENCY || 'GHS';
+    const finalAmountInSubunits = Math.round(amountInCents * liveRate);
 
     const reference = `sp_${tier}_${userId.slice(0, 8)}_${Date.now()}`;
 
     const txPayload = {
       email: userData.email,
-      amount: amountInCents,
-      currency: 'USD',
+      amount: finalAmountInSubunits,
+      currency: finalCurrency,
       reference,
       channels: ['card', 'bank', 'ussd', 'mobile_money', 'bank_transfer'],
       metadata: {
         userId,
         tier,
-        creditsToAdd: PLAN_CREDIT_MAP[tier].credits,
+        creditsToAdd,
         planToSet: PLAN_CREDIT_MAP[tier].plan,
         custom_fields: [
           { display_name: 'Plan', variable_name: 'plan', value: planData.name },
@@ -495,9 +642,7 @@ app.post('/api/paystack/initialize', async (req, res) => {
       callback_url: req.body.callbackUrl || undefined,
     };
 
-    if (process.env.PAYSTACK_SUBACCOUNT_CODE) {
-      txPayload.subaccount = process.env.PAYSTACK_SUBACCOUNT_CODE;
-    }
+
 
     const result = await paystackRequest('/transaction/initialize', 'POST', txPayload);
 
@@ -519,7 +664,7 @@ app.post('/api/paystack/initialize', async (req, res) => {
   }
 });
 
-app.get('/api/paystack/verify/:reference', async (req, res) => {
+app.get('/api/paystack/verify/:reference', paymentLimiter, async (req, res) => {
   try {
     const decoded = await verifyAuth(req);
     const { reference } = req.params;

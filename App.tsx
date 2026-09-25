@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, Suspense } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Upload, 
@@ -43,21 +43,22 @@ import { AudioState, AudioMetadata } from './types';
 import { formatBytes, extractAudioFromVideo, getAudioDuration, convertBlobToMp3 } from './services/audioUtils';
 import { calculateCreditsForProcessing } from './services/creditsUtils';
 import AudioUploader from './components/AudioUploader';
-import AuthModal from './components/AuthModal';
-import SubscriptionModal from './components/SubscriptionModal';
 import { type SubscriptionTier } from './constants/subscriptionPlans';
-import PaymentPage from './components/PaymentPage';
 import { auth, db } from './firebase';
 import { signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 
+const AuthModal = React.lazy(() => import('./components/AuthModal'));
+const SubscriptionModal = React.lazy(() => import('./components/SubscriptionModal'));
+const PaymentPage = React.lazy(() => import('./components/PaymentPage'));
+
 const NOISE_TYPES = [
-  { name: 'Background Audio', icon: <Waves className="w-5 h-5" /> },
-  { name: 'Breath & Mouth', icon: <Wind className="w-5 h-5" /> },
-  { name: 'Restaurant Chatter', icon: <Coffee className="w-5 h-5" /> },
-  { name: 'Dog Barking', icon: <Dog className="w-5 h-5" /> },
-  { name: 'Water & Nature', icon: <Droplets className="w-5 h-5" /> },
-  { name: 'Background Music', icon: <Music className="w-5 h-5" /> },
+  { name: 'Background Audio', icon: <Waves className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
+  { name: 'Breath & Mouth', icon: <Wind className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
+  { name: 'Restaurant Chatter', icon: <Coffee className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
+  { name: 'Dog Barking', icon: <Dog className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
+  { name: 'Water & Nature', icon: <Droplets className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
+  { name: 'Background Music', icon: <Music className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
 ];
 
 const STEPS = [
@@ -102,11 +103,33 @@ const App: React.FC = () => {
   const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
   const [subscriptionTier, setSubscriptionTier] = useState<SubscriptionTier>('payg');
   const [showPaymentPage, setShowPaymentPage] = useState(false);
+  const [customCredits, setCustomCredits] = useState<number | undefined>(undefined);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
+
+  const [playingAudio, setPlayingAudio] = useState<{ url: string; index: number; type: 'before' | 'after' } | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const toggleSamplePlayback = (url: string, index: number, type: 'before' | 'after') => {
+    if (playingAudio?.url === url) {
+       audioRef.current?.pause();
+       setPlayingAudio(null);
+    } else {
+       if (audioRef.current) {
+          audioRef.current.src = url;
+          audioRef.current.play();
+       }
+       setPlayingAudio({ url, index, type });
+    }
+  };
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.onended = () => setPlayingAudio(null);
+      audio.onpause = () => setPlayingAudio(null);
+    }
+  }, []);
 
   // maxIntensity removed for Cleanvoice
 
@@ -126,11 +149,11 @@ const App: React.FC = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const handleCheckout = (tier: SubscriptionTier) => {
+  const handleCheckout = (tier: SubscriptionTier, credits?: number) => {
     setSubscriptionTier(tier);
+    setCustomCredits(credits);
     setShowPaymentPage(true);
   };
-  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   React.useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
@@ -160,6 +183,7 @@ const App: React.FC = () => {
               credits: 50,
               creditsUsedThisMonth: 0,
               dailyEnhancesUsed: 0,
+              dailyEnhancesDate: '',
               dailyEnhancesResetAt: serverTimestamp(),
               createdAt: serverTimestamp(),
               billingRenewDate: serverTimestamp(),
@@ -223,31 +247,34 @@ const App: React.FC = () => {
 
   if (showPaymentPage) {
     return (
-      <PaymentPage
-        tier={subscriptionTier}
-        onBack={() => setShowPaymentPage(false)}
-        userEmail={user?.email ?? undefined}
-        onPaymentSuccess={() => setShowPaymentPage(false)}
-      />
+      <Suspense fallback={<div className="min-h-screen bg-gray-50 dark:bg-[#0a0a0a]" />}>
+        <PaymentPage
+          tier={subscriptionTier}
+          customCredits={customCredits}
+          onBack={() => setShowPaymentPage(false)}
+          userEmail={user?.email ?? undefined}
+          onPaymentSuccess={() => setShowPaymentPage(false)}
+        />
+      </Suspense>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-[#0a0a0a] text-gray-900 dark:text-white selection:bg-indigo-500/30 relative overflow-hidden transition-colors duration-300">
-      {/* Background Audio Theme Elements */}
-      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden opacity-[0.05] dark:opacity-[0.03]">
+    <div className="min-h-screen bg-[#f8f9fb] dark:bg-[#0a0a0a] text-gray-900 dark:text-white selection:bg-indigo-500/30 relative overflow-hidden transition-colors duration-300">
+      {/* Subtle grid — dark mode only */}
+      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden hidden dark:block opacity-[0.03]">
         <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
           <defs>
             <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
               <path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" strokeWidth="1"/>
             </pattern>
           </defs>
-          <rect width="100%" height="100%" fill="url(#grid)" className="text-gray-900 dark:text-white" />
+          <rect width="100%" height="100%" fill="url(#grid)" className="text-white" />
         </svg>
       </div>
 
       {/* Header */}
-      <nav className="sticky top-0 z-50 border-b border-gray-200 dark:border-white/5 bg-white/80 dark:bg-[#0a0a0a]/80 backdrop-blur-xl transition-colors duration-300">
+      <nav className="sticky top-0 z-50 border-b border-slate-200/80 dark:border-white/5 bg-white/90 dark:bg-[#0a0a0a]/80 backdrop-blur-xl transition-colors duration-300 shadow-sm shadow-slate-200/40 dark:shadow-none">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
           <motion.div 
             initial={{ opacity: 0, x: -20 }}
@@ -260,11 +287,11 @@ const App: React.FC = () => {
           <motion.div 
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
-            className="flex items-center gap-4 text-sm text-gray-600 dark:text-white/60"
+            className="flex items-center gap-4 text-sm text-gray-700 dark:text-white/60"
           >
             <button 
               onClick={toggleTheme}
-              className="p-2.5 rounded-full bg-gray-200 dark:bg-white/5 hover:bg-gray-300 dark:hover:bg-white/10 transition-colors text-gray-700 dark:text-white/70"
+              className="p-2.5 rounded-full bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 transition-colors text-slate-700 dark:text-white/70"
               aria-label="Toggle theme"
             >
               {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
@@ -335,57 +362,70 @@ const App: React.FC = () => {
         </div>
       </nav>
 
-      <AuthModal 
-        isOpen={showAuthModal} 
-        onClose={() => setShowAuthModal(false)} 
-        initialMode={authMode} 
-      />
+      <Suspense fallback={null}>
+        <AuthModal 
+          isOpen={showAuthModal} 
+          onClose={() => setShowAuthModal(false)} 
+          initialMode={authMode} 
+        />
 
-      <SubscriptionModal 
-        isOpen={showSubscriptionModal} 
-        onClose={() => setShowSubscriptionModal(false)} 
-        tier={subscriptionTier}
-        isAuthenticated={!!user}
-        onSignIn={() => { setAuthMode('signin'); setShowAuthModal(true); }}
-        onCheckout={handleCheckout}
-      />
+        <SubscriptionModal 
+          isOpen={showSubscriptionModal} 
+          onClose={() => setShowSubscriptionModal(false)} 
+          tier={subscriptionTier}
+          isAuthenticated={!!user}
+          onSignIn={() => { setAuthMode('signin'); setShowAuthModal(true); }}
+          onCheckout={handleCheckout}
+        />
+      </Suspense>
 
       <main className="max-w-7xl mx-auto px-6 py-16 relative z-10">
-        {/* Clean Grid Background */}
-        <div className="absolute inset-0 -z-10 h-full w-full bg-white dark:bg-[#0a0a0a] bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]">
-          <div className="absolute left-0 right-0 top-0 -z-10 m-auto h-[310px] w-[310px] rounded-full bg-indigo-500 opacity-20 blur-[100px]"></div>
+        {/* Dark-mode only soft glow */}
+        <div className="absolute inset-0 -z-10 pointer-events-none hidden dark:block">
+          <div className="absolute left-0 right-0 top-0 m-auto h-[310px] w-[310px] rounded-full bg-indigo-500 opacity-20 blur-[100px]" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
           {/* Left Column: Hero & Action Panel */}
-          <div className={user ? "lg:col-span-8 space-y-12" : "lg:col-span-12 max-w-4xl mx-auto space-y-12"}>
+          <div className={`relative ${user ? "lg:col-span-8 space-y-12" : "lg:col-span-12 max-w-4xl mx-auto space-y-12"}`}>
+            {/* Perspective grid — light mode hero background */}
+            <div className="absolute inset-x-0 top-0 -bottom-8 -z-10 pointer-events-none overflow-hidden dark:hidden">
+              <img
+                src="/hero-grid-light.png"
+                alt=""
+                aria-hidden="true"
+                className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[120%] max-w-none h-[70%] min-h-[420px] object-cover object-bottom"
+              />
+              <div className="absolute inset-0 bg-gradient-to-b from-[#f8f9fb] via-[#f8f9fb]/40 to-transparent" />
+            </div>
+
             <motion.div 
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, ease: "easeOut" }}
               className={user ? "text-left" : "text-center flex flex-col items-center"}
             >
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-300 text-xs font-semibold uppercase tracking-widest mb-8">
-                <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-white/5 border border-indigo-200 dark:border-white/10 text-indigo-700 dark:text-gray-300 text-xs font-semibold uppercase tracking-widest mb-8 shadow-sm shadow-indigo-100">
+                <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
                 <span>Professional Audio Processing</span>
               </div>
-              <h1 className="text-5xl sm:text-7xl font-bold mb-6 tracking-tight leading-[1.1] text-gray-900 dark:text-white">
+              <h1 className="text-5xl sm:text-7xl font-bold mb-6 tracking-tight leading-[1.1] text-slate-900 dark:text-white">
                 Crystal clear audio.<br />
-                <span className="text-gray-400 dark:text-gray-500">Zero background noise.</span>
+                <span className="text-indigo-600 dark:text-gray-500">Zero background noise.</span>
               </h1>
-              <p className={`text-lg sm:text-xl text-gray-600 dark:text-gray-400 max-w-2xl leading-relaxed mb-10 ${!user ? 'mx-auto' : ''}`}>
+              <p className={`text-lg sm:text-xl text-slate-700 dark:text-gray-400 max-w-2xl leading-relaxed mb-10 ${!user ? 'mx-auto' : ''}`}>
                 Transform your recordings with studio-grade cleanup. SonicPure isolates your voice, eliminates environmental noise, and preserves the natural warmth of your audio in seconds.
               </p>
               
-              <div className={`flex flex-wrap items-center gap-4 text-sm text-gray-500 dark:text-gray-400 font-medium ${!user ? 'justify-center' : ''}`}>
-                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-white/10">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> No credit card required
+              <div className={`flex flex-wrap items-center gap-4 text-sm text-slate-700 dark:text-gray-400 font-medium ${!user ? 'justify-center' : ''}`}>
+                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-indigo-200 dark:border-white/10 shadow-sm shadow-indigo-100/80">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" /> No credit card required
                 </div>
-                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-white/10">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Free 50 credits
+                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-indigo-200 dark:border-white/10 shadow-sm shadow-indigo-100/80">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Free 50 credits
                 </div>
-                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-gray-200 dark:border-white/10">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" /> Secure processing
+                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-indigo-200 dark:border-white/10 shadow-sm shadow-indigo-100/80">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Secure processing
                 </div>
               </div>
             </motion.div>
@@ -395,7 +435,7 @@ const App: React.FC = () => {
               initial={{ opacity: 0, y: 40 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6, delay: 0.2, ease: "easeOut" }}
-              className="bg-white dark:bg-white/[0.02] backdrop-blur-xl rounded-[2.5rem] p-8 sm:p-12 border border-gray-200 dark:border-white/10 shadow-xl shadow-gray-200/50 dark:shadow-2xl dark:shadow-black/50"
+              className="bg-white dark:bg-white/[0.02] backdrop-blur-xl rounded-[2.5rem] p-8 sm:p-12 border border-indigo-200/80 dark:border-white/10 shadow-xl shadow-indigo-200/40 dark:shadow-2xl dark:shadow-black/50"
             >
               <AudioUploader />
             </motion.div>
@@ -409,30 +449,30 @@ const App: React.FC = () => {
           transition={{ duration: 0.6, delay: 0.4, ease: "easeOut" }}
           className="lg:col-span-4 space-y-6"
         >
-          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-white/5 hover:border-indigo-500/30 transition-colors group">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-              <Activity className="w-6 h-6 text-indigo-600 dark:text-indigo-400" />
+          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-indigo-200/80 dark:border-white/5 hover:border-indigo-400 dark:hover:border-indigo-500/30 transition-colors group shadow-md shadow-indigo-100/50 dark:shadow-none">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-100 dark:bg-indigo-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+              <Activity className="w-6 h-6 text-indigo-700 dark:text-indigo-400" />
             </div>
-            <h4 className="text-xl font-bold mb-3 text-gray-900 dark:text-white">Neural Extraction</h4>
-            <p className="text-gray-500 dark:text-white/50 leading-relaxed text-sm">
+            <h4 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">Neural Extraction</h4>
+            <p className="text-slate-600 dark:text-white/50 leading-relaxed text-sm">
               Advanced AI models differentiate between foreground vocal signals and complex background environmental noise with surgical precision.
             </p>
           </div>
-          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-white/5 hover:border-purple-500/30 transition-colors group">
-            <div className="w-12 h-12 rounded-2xl bg-purple-50 dark:bg-purple-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-              <Volume2 className="w-6 h-6 text-purple-600 dark:text-purple-400" />
+          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-violet-200/80 dark:border-white/5 hover:border-violet-400 dark:hover:border-purple-500/30 transition-colors group shadow-md shadow-violet-100/50 dark:shadow-none">
+            <div className="w-12 h-12 rounded-2xl bg-violet-100 dark:bg-purple-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+              <Volume2 className="w-6 h-6 text-violet-700 dark:text-purple-400" />
             </div>
-            <h4 className="text-xl font-bold mb-3 text-gray-900 dark:text-white">Tone Preservation</h4>
-            <p className="text-gray-500 dark:text-white/50 leading-relaxed text-sm">
+            <h4 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">Tone Preservation</h4>
+            <p className="text-slate-600 dark:text-white/50 leading-relaxed text-sm">
               Designed specifically to avoid the "robotic" phase artifacts and underwater sounds common in legacy spectral subtractive algorithms.
             </p>
           </div>
-          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-gray-200 dark:border-white/5 hover:border-pink-500/30 transition-colors group">
-            <div className="w-12 h-12 rounded-2xl bg-pink-50 dark:bg-pink-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-              <Settings2 className="w-6 h-6 text-pink-600 dark:text-pink-400" />
+          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-fuchsia-200/80 dark:border-white/5 hover:border-fuchsia-400 dark:hover:border-pink-500/30 transition-colors group shadow-md shadow-fuchsia-100/50 dark:shadow-none">
+            <div className="w-12 h-12 rounded-2xl bg-fuchsia-100 dark:bg-pink-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+              <Settings2 className="w-6 h-6 text-fuchsia-700 dark:text-pink-400" />
             </div>
-            <h4 className="text-xl font-bold mb-3 text-gray-900 dark:text-white">Dynamic Intensity</h4>
-            <p className="text-gray-500 dark:text-white/50 leading-relaxed text-sm">
+            <h4 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">Dynamic Intensity</h4>
+            <p className="text-slate-600 dark:text-white/50 leading-relaxed text-sm">
               Full control over the processing depth. Choose between light cleanup for ambient feels or heavy isolation for podcast-style clarity.
             </p>
           </div>
@@ -448,44 +488,44 @@ const App: React.FC = () => {
       className="mt-32 mb-16"
     >
       <div className="text-center mb-16">
-        <h2 className="text-3xl sm:text-5xl font-bold mb-6">Simple, Transparent Pricing</h2>
-        <p className="text-gray-500 dark:text-white/50 text-lg max-w-2xl mx-auto">Start for free, upgrade when you need more power. All plans use our credit-based system.</p>
+        <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">Simple, Transparent Pricing</h2>
+        <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Start for free, upgrade when you need more power. All plans use our credit-based system.</p>
       </div>
       
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
         {/* Free Plan */}
-        <div className="p-8 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-gray-200 dark:border-white/5 flex flex-col">
-          <h3 className="text-2xl font-bold mb-2">Free</h3>
-          <p className="text-gray-500 dark:text-white/50 mb-6">Perfect for trying out the service.</p>
+        <div className="p-8 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 flex flex-col shadow-md shadow-slate-200/60 dark:shadow-none">
+          <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Free</h3>
+          <p className="text-slate-600 dark:text-white/50 mb-6">Perfect for trying out the service.</p>
           <div className="mb-8">
-            <span className="text-5xl font-extrabold">$0</span>
-            <span className="text-gray-500 dark:text-white/50">/month</span>
+            <span className="text-5xl font-extrabold text-slate-900 dark:text-white">$0</span>
+            <span className="text-slate-500 dark:text-white/50">/month</span>
           </div>
-          <ul className="space-y-4 mb-8 flex-1">
+          <ul className="space-y-4 mb-8 flex-1 text-slate-700 dark:text-inherit">
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 50 credits / month</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 2 audio enhance options / day</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 20 mins max audio length</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Standard processing speed</li>
           </ul>
-          <button className="w-full py-4 rounded-2xl bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-900 dark:text-white font-semibold transition-colors border border-gray-200 dark:border-white/10">
+          <button className="w-full py-4 rounded-2xl bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-900 dark:text-white font-semibold transition-colors border border-slate-200 dark:border-white/10">
             Current Plan
           </button>
         </div>
 
         {/* Pay As You Go */}
-        <div className="p-8 rounded-[2.5rem] bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 flex flex-col relative">
-          <div className="absolute -top-4 left-1/2 -translate-x-1/2 px-4 py-1 bg-indigo-500 text-white text-xs font-bold uppercase tracking-wider rounded-full">
+        <div className="p-8 rounded-[2.5rem] bg-indigo-100 dark:bg-indigo-500/10 border border-indigo-300 dark:border-indigo-500/20 flex flex-col relative shadow-lg shadow-indigo-200/70 dark:shadow-none">
+          <div className="absolute -top-4 left-1/2 -translate-x-1/2 px-4 py-1 bg-indigo-600 text-white text-xs font-bold uppercase tracking-wider rounded-full">
             Most Popular
           </div>
-          <h3 className="text-2xl font-bold mb-2">Pay As You Go</h3>
-          <p className="text-indigo-800/60 dark:text-indigo-200/60 mb-6">For occasional creators.</p>
+          <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Pay As You Go</h3>
+          <p className="text-indigo-800 dark:text-indigo-200/60 mb-6">Buy exactly what you need.</p>
           <div className="mb-8">
-            <span className="text-5xl font-extrabold">$5</span>
-            <span className="text-gray-500 dark:text-white/50">/150 credits</span>
+            <span className="text-5xl font-extrabold tracking-tight text-slate-900 dark:text-white">Flexible</span>
+            <div className="text-sm font-medium text-indigo-700 dark:text-indigo-400/60 mt-1">$1 per 20 credits</div>
           </div>
-          <ul className="space-y-4 mb-8 flex-1">
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 150 credits (never expire)</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Unlimited daily enhances</li>
+          <ul className="space-y-4 mb-8 flex-1 text-slate-700 dark:text-inherit">
+            <li className="flex items-center gap-3 text-sm font-bold text-indigo-800 dark:text-indigo-300"><CheckCircle2 className="w-5 h-5 shrink-0" /> Custom credit amount</li>
+            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 4 highlights enhancements per day</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 30 mins max audio length</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> High priority processing</li>
           </ul>
@@ -498,48 +538,48 @@ const App: React.FC = () => {
         </div>
 
         {/* Pro Plan */}
-        <div className="p-8 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-gray-200 dark:border-white/5 flex flex-col">
-          <h3 className="text-2xl font-bold mb-2">Pro</h3>
-          <p className="text-gray-500 dark:text-white/50 mb-6">For professional workflows.</p>
+        <div className="p-8 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 flex flex-col shadow-md shadow-slate-200/60 dark:shadow-none">
+          <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Pro</h3>
+          <p className="text-slate-600 dark:text-white/50 mb-6">For professional workflows.</p>
           <div className="mb-8">
-            <span className="text-5xl font-extrabold">$20</span>
-            <span className="text-gray-500 dark:text-white/50">/month</span>
+            <span className="text-5xl font-extrabold text-slate-900 dark:text-white">$20</span>
+            <span className="text-slate-500 dark:text-white/50">/month</span>
           </div>
-          <ul className="space-y-4 mb-8 flex-1">
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 2500 credits / month</li>
+          <ul className="space-y-4 mb-8 flex-1 text-slate-700 dark:text-inherit">
+            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 600 credits / month</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Extract audio from video</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 50 mins max audio length</li>
             <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Advanced noise profiles</li>
           </ul>
           <button 
             onClick={() => openSubscriptionModal('pro')}
-            className="w-full py-4 rounded-2xl bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10 text-gray-900 dark:text-white font-semibold transition-colors border border-gray-200 dark:border-white/10"
+            className="w-full py-4 rounded-2xl bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-900 dark:text-white font-semibold transition-colors border border-slate-200 dark:border-white/10"
           >
             Subscribe Now
           </button>
         </div>
         
-        {/* Unlimited Plan */}
-        <div className="md:col-span-3 p-8 rounded-[2.5rem] bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 flex flex-col md:flex-row items-center justify-between gap-8">
+        {/* Audio Master Plan */}
+        <div className="md:col-span-3 p-8 rounded-[2.5rem] bg-indigo-100 dark:bg-indigo-500/10 border border-indigo-300 dark:border-indigo-500/20 flex flex-col md:flex-row items-center justify-between gap-8 shadow-lg shadow-indigo-200/70 dark:shadow-none">
           <div>
-            <h3 className="text-2xl font-bold mb-2">Unlimited Studio</h3>
-            <p className="text-gray-500 dark:text-white/50 mb-4 max-w-xl">The ultimate package for studios and heavy users. Get unlimited credits, higher tier audio enhancement, and multiple upload options.</p>
-            <ul className="flex flex-wrap gap-6">
-              <li className="flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Unlimited Credits</li>
+            <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Audio Master Studio</h3>
+            <p className="text-slate-600 dark:text-white/50 mb-4 max-w-xl">The ultimate package for studios and heavy users. Get 2000 credits, higher tier audio enhancement, and multiple upload options.</p>
+            <ul className="flex flex-wrap gap-6 text-slate-700 dark:text-inherit">
+              <li className="flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> 2000 Credits / Month</li>
               <li className="flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Multiple Uploads</li>
               <li className="flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Highest Tier Enhancement</li>
             </ul>
           </div>
           <div className="flex flex-col items-center shrink-0">
             <div className="mb-4 text-center">
-              <span className="text-5xl font-extrabold">$60</span>
-              <span className="text-gray-500 dark:text-white/50">/month</span>
+              <span className="text-5xl font-extrabold text-slate-900 dark:text-white">$60</span>
+              <span className="text-slate-500 dark:text-white/50">/month</span>
             </div>
             <button 
-              onClick={() => openSubscriptionModal('unlimited')}
-              className="px-8 py-4 rounded-2xl bg-gray-900 dark:bg-white text-white dark:text-black hover:bg-gray-800 dark:hover:bg-white/90 font-bold transition-colors shadow-xl"
+              onClick={() => openSubscriptionModal('audio_master')}
+              className="px-8 py-4 rounded-2xl bg-slate-900 dark:bg-white text-white dark:text-black hover:bg-slate-800 dark:hover:bg-white/90 font-bold transition-colors shadow-xl"
             >
-              Get Unlimited
+              Get Audio Master
             </button>
           </div>
         </div>
@@ -554,30 +594,36 @@ const App: React.FC = () => {
           className="mt-32"
         >
           <div className="text-center mb-16">
-            <h2 className="text-3xl sm:text-5xl font-bold mb-6">Excellent Quality</h2>
-            <p className="text-gray-500 dark:text-white/50 text-lg max-w-2xl mx-auto">Hear the difference. Our AI models are trained to isolate specific noise profiles while leaving the primary audio untouched.</p>
+            <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">Excellent Quality</h2>
+            <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Hear the difference. Our AI models are trained to isolate specific noise profiles while leaving the primary audio untouched.</p>
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {NOISE_TYPES.map((type, idx) => (
-              <div key={idx} className="p-6 rounded-3xl bg-white dark:bg-white/[0.02] border border-gray-200 dark:border-white/5 hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-colors">
+              <div key={idx} className="p-6 rounded-3xl bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 hover:bg-indigo-50/60 dark:hover:bg-white/[0.04] transition-colors shadow-md shadow-slate-200/50 dark:shadow-none">
                 <div className="flex items-center gap-3 mb-6">
-                  <div className="p-3 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                  <div className="p-3 rounded-xl bg-indigo-100 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-400">
                     {type.icon}
                   </div>
-                  <h3 className="font-semibold text-lg">{type.name}</h3>
+                  <h3 className="font-semibold text-lg text-slate-900 dark:text-white">{type.name}</h3>
                 </div>
                 <div className="space-y-4">
-                  <div className="bg-gray-100 dark:bg-black/50 rounded-xl p-3 flex items-center justify-between border border-gray-200 dark:border-white/5">
-                    <span className="text-xs font-medium text-gray-500 dark:text-white/40 uppercase tracking-wider">Before</span>
-                    <button className="w-8 h-8 rounded-full bg-white dark:bg-white/10 flex items-center justify-center hover:bg-gray-50 dark:hover:bg-white/20 transition-colors text-gray-900 dark:text-white shadow-sm dark:shadow-none">
-                      <Play className="w-4 h-4 ml-0.5" />
+                  <div className="bg-slate-100 dark:bg-black/50 rounded-xl p-3 flex items-center justify-between border border-slate-200 dark:border-white/5">
+                    <span className="text-xs font-medium text-slate-600 dark:text-white/40 uppercase tracking-wider">Before</span>
+                    <button 
+                      onClick={() => toggleSamplePlayback(type.beforeUrl, idx, 'before')}
+                      className="w-8 h-8 rounded-full bg-white dark:bg-white/10 flex items-center justify-center hover:bg-slate-50 dark:hover:bg-white/20 transition-colors text-slate-900 dark:text-white shadow-sm dark:shadow-none"
+                    >
+                      {playingAudio?.url === type.beforeUrl ? <Pause className="w-4 h-4 ml-0.5" /> : <Play className="w-4 h-4 ml-0.5" />}
                     </button>
                   </div>
-                  <div className="bg-indigo-50 dark:bg-indigo-500/10 rounded-xl p-3 flex items-center justify-between border border-indigo-100 dark:border-indigo-500/20">
-                    <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300 uppercase tracking-wider">After</span>
-                    <button className="w-8 h-8 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center hover:bg-indigo-500 dark:hover:bg-indigo-400 transition-colors shadow-lg shadow-indigo-500/20">
-                      <Play className="w-4 h-4 text-white ml-0.5" />
+                  <div className="bg-indigo-100 dark:bg-indigo-500/10 rounded-xl p-3 flex items-center justify-between border border-indigo-200 dark:border-indigo-500/20">
+                    <span className="text-xs font-medium text-indigo-800 dark:text-indigo-300 uppercase tracking-wider">After</span>
+                    <button 
+                      onClick={() => toggleSamplePlayback(type.afterUrl, idx, 'after')}
+                      className="w-8 h-8 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center hover:bg-indigo-500 dark:hover:bg-indigo-400 transition-colors shadow-lg shadow-indigo-500/20"
+                    >
+                      {playingAudio?.url === type.afterUrl ? <Pause className="w-4 h-4 text-white ml-0.5" /> : <Play className="w-4 h-4 text-white ml-0.5" />}
                     </button>
                   </div>
                 </div>
@@ -593,29 +639,29 @@ const App: React.FC = () => {
           viewport={{ once: true }}
           className="mt-32 relative"
         >
-          <div className="absolute inset-0 bg-indigo-50 dark:bg-indigo-500/5 rounded-[3rem] -z-10" />
-          <div className="p-10 sm:p-16 rounded-[3rem] border border-gray-200 dark:border-white/5">
+          <div className="absolute inset-0 bg-indigo-100/80 dark:bg-indigo-500/5 rounded-[3rem] -z-10" />
+          <div className="p-10 sm:p-16 rounded-[3rem] border border-indigo-200 dark:border-white/5">
             <div className="text-center mb-16">
-              <h2 className="text-3xl sm:text-5xl font-bold mb-6">3 Easy Steps</h2>
-              <p className="text-gray-500 dark:text-white/50 text-lg max-w-2xl mx-auto">Remove noise from audio & video online for free without learning complex editing tools.</p>
+              <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">3 Easy Steps</h2>
+              <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Remove noise from audio & video online for free without learning complex editing tools.</p>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-12 relative">
               {/* Connecting Line */}
-              <div className="hidden md:block absolute top-12 left-[15%] right-[15%] h-0.5 bg-indigo-100 dark:bg-indigo-500/20" />
+              <div className="hidden md:block absolute top-12 left-[15%] right-[15%] h-0.5 bg-indigo-300 dark:bg-indigo-500/20" />
               
               {STEPS.map((step, idx) => (
                 <div key={idx} className="relative z-10 flex flex-col items-center text-center">
-                  <div className="w-24 h-24 rounded-full bg-white dark:bg-[#0a0a0a] border border-gray-200 dark:border-white/10 flex items-center justify-center mb-6 shadow-xl relative group">
+                  <div className="w-24 h-24 rounded-full bg-white dark:bg-[#0a0a0a] border border-indigo-200 dark:border-white/10 flex items-center justify-center mb-6 shadow-xl shadow-indigo-200/60 dark:shadow-xl relative group">
                     <div className="absolute inset-0 rounded-full bg-indigo-100 dark:bg-indigo-500/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    <div className="text-indigo-600 dark:text-indigo-400 group-hover:scale-110 transition-transform">
+                    <div className="text-indigo-700 dark:text-indigo-400 group-hover:scale-110 transition-transform">
                       {step.icon}
                     </div>
                     <div className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center text-white text-sm font-bold shadow-lg shadow-indigo-500/20">
                       {idx + 1}
                     </div>
                   </div>
-                  <h3 className="text-xl font-bold mb-3">{step.title}</h3>
-                  <p className="text-gray-500 dark:text-white/50 leading-relaxed">{step.desc}</p>
+                  <h3 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">{step.title}</h3>
+                  <p className="text-slate-600 dark:text-white/50 leading-relaxed">{step.desc}</p>
                 </div>
               ))}
             </div>
@@ -630,12 +676,12 @@ const App: React.FC = () => {
           className="mt-32 grid grid-cols-1 lg:grid-cols-2 gap-8"
         >
           {/* Creators */}
-          <div className="p-10 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-gray-200 dark:border-white/5">
-            <h2 className="text-3xl font-bold mb-4">Designed for Creators</h2>
-            <p className="text-gray-500 dark:text-white/50 mb-8">Millions of creators use SonicPure AI to enhance the quality of their content.</p>
+          <div className="p-10 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 shadow-md shadow-slate-200/50 dark:shadow-none">
+            <h2 className="text-3xl font-bold mb-4 text-slate-900 dark:text-white">Designed for Creators</h2>
+            <p className="text-slate-600 dark:text-white/50 mb-8">Millions of creators use SonicPure AI to enhance the quality of their content.</p>
             <div className="flex flex-wrap gap-3">
               {CREATORS.map((creator, idx) => (
-                <span key={idx} className="px-4 py-2 rounded-full bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 text-sm font-medium hover:bg-gray-100 dark:hover:bg-white/10 transition-colors cursor-default">
+                <span key={idx} className="px-4 py-2 rounded-full bg-indigo-50 dark:bg-white/5 border border-indigo-200 dark:border-white/10 text-sm font-medium text-slate-700 dark:text-inherit hover:bg-indigo-100 dark:hover:bg-white/10 transition-colors cursor-default">
                   {creator}
                 </span>
               ))}
@@ -643,12 +689,12 @@ const App: React.FC = () => {
           </div>
 
           {/* Other Tools */}
-          <div className="p-10 rounded-[2.5rem] bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20">
-            <h2 className="text-3xl font-bold mb-4">Power Your Sound</h2>
-            <p className="text-indigo-800/60 dark:text-indigo-200/60 mb-8">Explore our suite of upcoming AI audio tools.</p>
+          <div className="p-10 rounded-[2.5rem] bg-indigo-100 dark:bg-indigo-500/10 border border-indigo-300 dark:border-indigo-500/20 shadow-md shadow-indigo-200/50 dark:shadow-none">
+            <h2 className="text-3xl font-bold mb-4 text-slate-900 dark:text-white">Power Your Sound</h2>
+            <p className="text-indigo-800 dark:text-indigo-200/60 mb-8">Explore our suite of upcoming AI audio tools.</p>
             <div className="grid grid-cols-2 gap-3">
               {OTHER_TOOLS.map((tool, idx) => (
-                <div key={idx} className="flex items-center gap-2 p-3 rounded-xl bg-white dark:bg-black/20 border border-gray-200 dark:border-white/5 text-sm font-medium hover:bg-gray-50 dark:hover:bg-black/40 transition-colors cursor-pointer group">
+                <div key={idx} className="flex items-center gap-2 p-3 rounded-xl bg-white dark:bg-black/20 border border-indigo-200 dark:border-white/5 text-sm font-medium text-slate-700 dark:text-inherit hover:bg-indigo-50 dark:hover:bg-black/40 transition-colors cursor-pointer group">
                   <ArrowRight className="w-4 h-4 text-indigo-600 dark:text-indigo-400 opacity-0 -ml-6 group-hover:opacity-100 group-hover:ml-0 transition-all" />
                   <span>{tool}</span>
                 </div>
@@ -665,8 +711,8 @@ const App: React.FC = () => {
           className="mt-32 mb-16"
         >
           <div className="text-center mb-16">
-            <h2 className="text-3xl sm:text-5xl font-bold mb-6">What People Are Saying</h2>
-            <p className="text-gray-500 dark:text-white/50 text-lg max-w-2xl mx-auto">Join thousands of satisfied creators who have transformed their audio.</p>
+            <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">What People Are Saying</h2>
+            <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Join thousands of satisfied creators who have transformed their audio.</p>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {TESTIMONIALS.map((t, idx) => (
@@ -676,19 +722,19 @@ const App: React.FC = () => {
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: idx * 0.1 }}
                 viewport={{ once: true }}
-                className="p-8 rounded-3xl bg-white dark:bg-white/[0.02] border border-gray-200 dark:border-white/5 relative hover:border-indigo-500/30 transition-colors group"
+                className="p-8 rounded-3xl bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 relative hover:border-indigo-400 dark:hover:border-indigo-500/30 transition-colors group shadow-md shadow-slate-200/50 dark:shadow-none"
               >
-                <Quote className="absolute top-6 right-6 w-8 h-8 text-gray-200 dark:text-white/5 group-hover:text-indigo-500/20 transition-colors" />
+                <Quote className="absolute top-6 right-6 w-8 h-8 text-indigo-100 dark:text-white/5 group-hover:text-indigo-200 dark:group-hover:text-indigo-500/20 transition-colors" />
                 <div className="flex items-center gap-4 mb-6">
                   <div className="w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-lg shadow-lg shadow-indigo-500/30">
                     {t.name.charAt(0)}
                   </div>
                   <div>
-                    <h4 className="font-bold">{t.name}</h4>
-                    <p className="text-xs text-gray-500 dark:text-white/40 uppercase tracking-wider">{t.role}</p>
+                    <h4 className="font-bold text-slate-900 dark:text-white">{t.name}</h4>
+                    <p className="text-xs text-slate-500 dark:text-white/40 uppercase tracking-wider">{t.role}</p>
                   </div>
                 </div>
-                <p className="text-gray-600 dark:text-white/70 leading-relaxed italic">"{t.text}"</p>
+                <p className="text-slate-700 dark:text-white/70 leading-relaxed italic">"{t.text}"</p>
               </motion.div>
             ))}
           </div>
@@ -702,8 +748,8 @@ const App: React.FC = () => {
           className="mt-32 mb-16 max-w-3xl mx-auto"
         >
           <div className="text-center mb-16">
-            <h2 className="text-3xl sm:text-5xl font-bold mb-6">Frequently Asked Questions</h2>
-            <p className="text-gray-500 dark:text-white/50 text-lg">Everything you need to know about SonicPure AI.</p>
+            <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">Frequently Asked Questions</h2>
+            <p className="text-slate-600 dark:text-white/50 text-lg">Everything you need to know about SonicPure AI.</p>
           </div>
           <div className="space-y-4">
             {FAQS.map((faq, idx) => (
@@ -713,17 +759,17 @@ const App: React.FC = () => {
                 whileInView={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4, delay: idx * 0.1 }}
                 viewport={{ once: true }}
-                className="border border-gray-200 dark:border-white/10 rounded-2xl overflow-hidden bg-white dark:bg-white/[0.02]"
+                className="border border-slate-200 dark:border-white/10 rounded-2xl overflow-hidden bg-white dark:bg-white/[0.02] shadow-sm shadow-slate-200/60 dark:shadow-none"
               >
                 <button
                   onClick={() => setOpenFaqIndex(openFaqIndex === idx ? null : idx)}
-                  className="w-full flex items-center justify-between p-6 text-left hover:bg-gray-50 dark:hover:bg-white/[0.02] transition-colors"
+                  className="w-full flex items-center justify-between p-6 text-left hover:bg-indigo-50/70 dark:hover:bg-white/[0.02] transition-colors"
                 >
-                  <span className="font-semibold text-lg pr-8">{faq.question}</span>
+                  <span className="font-semibold text-lg pr-8 text-slate-900 dark:text-white">{faq.question}</span>
                   {openFaqIndex === idx ? (
-                    <ChevronUp className="w-5 h-5 text-indigo-500 shrink-0" />
+                    <ChevronUp className="w-5 h-5 text-indigo-600 shrink-0" />
                   ) : (
-                    <ChevronDown className="w-5 h-5 text-gray-400 shrink-0" />
+                    <ChevronDown className="w-5 h-5 text-slate-500 shrink-0" />
                   )}
                 </button>
                 <AnimatePresence>
@@ -733,7 +779,7 @@ const App: React.FC = () => {
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
                       transition={{ duration: 0.3 }}
-                      className="px-6 pb-6 text-gray-600 dark:text-white/60 leading-relaxed"
+                      className="px-6 pb-6 text-slate-700 dark:text-white/60 leading-relaxed"
                     >
                       {faq.answer}
                     </motion.div>
@@ -746,48 +792,48 @@ const App: React.FC = () => {
 
       </main>
 
-      <footer className="py-16 border-t border-gray-200 dark:border-white/5 bg-gray-50 dark:bg-[#050505]">
+      <footer className="py-16 border-t border-indigo-200 dark:border-white/5 bg-white dark:bg-[#050505]">
         <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 md:grid-cols-4 gap-12">
           <div className="col-span-1 md:col-span-2">
             <div className="flex items-center gap-2 mb-6">
               <img src="/logo.png" alt="" className="h-9 w-9 object-contain" />
-              <span className="font-bold text-lg tracking-tight text-gray-900 dark:text-white">SonicPure <span className="text-indigo-500">AI</span></span>
+              <span className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">SonicPure <span className="text-indigo-600">AI</span></span>
             </div>
-            <p className="text-gray-500 dark:text-gray-400 text-sm max-w-sm leading-relaxed mb-6">
+            <p className="text-slate-600 dark:text-gray-400 text-sm max-w-sm leading-relaxed mb-6">
               Next-generation audio processing powered by AI. Remove background noise, enhance voices, and achieve studio-quality sound in seconds.
             </p>
             <div className="flex items-center gap-4">
-              <a href="#" className="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">
+              <a href="#" className="text-slate-500 hover:text-indigo-700 dark:hover:text-white transition-colors">
                 <Twitter className="w-5 h-5" />
               </a>
-              <a href="#" className="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">
+              <a href="#" className="text-slate-500 hover:text-indigo-700 dark:hover:text-white transition-colors">
                 <Github className="w-5 h-5" />
               </a>
-              <a href="#" className="text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors">
+              <a href="#" className="text-slate-500 hover:text-indigo-700 dark:hover:text-white transition-colors">
                 <Linkedin className="w-5 h-5" />
               </a>
             </div>
           </div>
           <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white mb-6">Tools</h4>
-            <ul className="space-y-4 text-sm text-gray-500 dark:text-gray-400">
-              <li><a href="#" className="hover:text-indigo-500 transition-colors">Noise Removal</a></li>
-              <li><a href="#" className="hover:text-indigo-500 transition-colors">Voice Isolation</a></li>
-              <li><a href="#" className="hover:text-indigo-500 transition-colors">Podcast Enhancer</a></li>
-              <li><a href="#" className="hover:text-indigo-500 transition-colors">API Access</a></li>
+            <h4 className="font-semibold text-slate-900 dark:text-white mb-6">Tools</h4>
+            <ul className="space-y-4 text-sm text-slate-600 dark:text-gray-400">
+              <li><a href="#" className="hover:text-indigo-600 transition-colors">Noise Removal</a></li>
+              <li><a href="#" className="hover:text-indigo-600 transition-colors">Voice Isolation</a></li>
+              <li><a href="#" className="hover:text-indigo-600 transition-colors">Podcast Enhancer</a></li>
+              <li><a href="#" className="hover:text-indigo-600 transition-colors">API Access</a></li>
             </ul>
           </div>
           <div>
-            <h4 className="font-semibold text-gray-900 dark:text-white mb-6">Contact</h4>
-            <ul className="space-y-4 text-sm text-gray-500 dark:text-gray-400">
-              <li><a href="mailto:support@sonicpure.ai" className="hover:text-indigo-500 transition-colors flex items-center gap-2"><Mail className="w-4 h-4" /> support@sonicpure.ai</a></li>
-              <li><a href="#" className="hover:text-indigo-500 transition-colors">Help Center</a></li>
-              <li><a href="#" className="hover:text-indigo-500 transition-colors">Terms of Service</a></li>
-              <li><a href="#" className="hover:text-indigo-500 transition-colors">Privacy Policy</a></li>
+            <h4 className="font-semibold text-slate-900 dark:text-white mb-6">Contact</h4>
+            <ul className="space-y-4 text-sm text-slate-600 dark:text-gray-400">
+              <li><a href="mailto:support@sonicpure.ai" className="hover:text-indigo-600 transition-colors flex items-center gap-2"><Mail className="w-4 h-4" /> support@sonicpure.ai</a></li>
+              <li><a href="#" className="hover:text-indigo-600 transition-colors">Help Center</a></li>
+              <li><a href="#" className="hover:text-indigo-600 transition-colors">Terms of Service</a></li>
+              <li><a href="#" className="hover:text-indigo-600 transition-colors">Privacy Policy</a></li>
             </ul>
           </div>
         </div>
-        <div className="max-w-7xl mx-auto px-6 mt-16 pt-8 border-t border-gray-200 dark:border-white/5 text-center text-gray-400 dark:text-gray-500 text-xs">
+        <div className="max-w-7xl mx-auto px-6 mt-16 pt-8 border-t border-indigo-100 dark:border-white/5 text-center text-slate-500 dark:text-gray-500 text-xs">
           &copy; {new Date().getFullYear()} SonicPure AI. All rights reserved.
         </div>
       </footer>

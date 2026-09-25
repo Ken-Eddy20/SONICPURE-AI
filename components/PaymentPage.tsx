@@ -9,12 +9,13 @@ declare global {
     PaystackPop: {
       setup(options: {
         key: string;
-        email: string;
-        amount: number;
+        email?: string;
+        amount?: number;
         currency?: string;
         ref?: string;
         channels?: string[];
         metadata?: Record<string, unknown>;
+        access_code?: string;
         onClose: () => void;
         callback: (response: { reference: string }) => void;
       }): { openIframe: () => void };
@@ -26,16 +27,22 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
 interface PaymentPageProps {
   tier: SubscriptionTier;
+  customCredits?: number;
   onBack: () => void;
   userEmail?: string | null;
   onPaymentSuccess?: () => void;
 }
 
-export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess }: PaymentPageProps) {
+export default function PaymentPage({ tier, customCredits, onBack, userEmail, onPaymentSuccess }: PaymentPageProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const details = TIER_DETAILS[tier];
+
+  const isPayg = tier === 'payg';
+  const displayPrice = isPayg && customCredits ? `$${customCredits / 20}` : details.price;
+  const displayCredits = isPayg && customCredits ? `${customCredits} credits` : details.period;
+  const amountInCents = isPayg && customCredits ? (customCredits / 20) * 100 : details.priceAmount * 100;
 
   const handlePayWithPaystack = async () => {
     setError(null);
@@ -57,7 +64,7 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ tier }),
+        body: JSON.stringify({ tier, customCredits: isPayg ? customCredits : undefined }),
       });
 
       const initData = await initRes.json();
@@ -69,7 +76,7 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
       }
 
       const { access_code, reference } = initData;
-
+      
       if (!window.PaystackPop) {
         setError('Paystack script not loaded. Please refresh the page.');
         setIsProcessing(false);
@@ -78,12 +85,10 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
 
       const handler = window.PaystackPop.setup({
         key: import.meta.env.VITE_PAYSTACK_PUBLIC_KEY || '',
-        email: userEmail || user.email || '',
-        amount: details.priceAmount * 100,
-        currency: 'USD',
-        ref: reference,
-        channels: ['card', 'bank', 'ussd', 'mobile_money', 'bank_transfer'],
-        metadata: { tier, userId: user.uid },
+        access_code: access_code,
+        onClose: () => {
+          setIsProcessing(false);
+        },
         callback: async (response) => {
           try {
             setIsProcessing(true);
@@ -104,9 +109,6 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
           } finally {
             setIsProcessing(false);
           }
-        },
-        onClose: () => {
-          setIsProcessing(false);
         },
       });
 
@@ -134,7 +136,7 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
             You've been upgraded to <span className="font-semibold text-indigo-600 dark:text-indigo-400">{details.name}</span>.
           </p>
           <p className="text-sm text-gray-400 dark:text-gray-500 mb-8">
-            {tier === 'payg' ? '150 credits have been added to your account.' : 'Your new plan is now active.'}
+            {isPayg ? `${customCredits || 130} credits have been added to your account.` : 'Your new plan is now active.'}
           </p>
           <button
             onClick={onBack}
@@ -170,13 +172,13 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
               <div className="flex items-center justify-between mb-6 pb-6 border-b border-gray-200 dark:border-white/10">
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{details.name}</h3>
-                  <p className="text-sm text-gray-500 dark:text-white/50">{details.period}</p>
+                  <p className="text-sm text-gray-500 dark:text-white/50">{displayCredits}</p>
                 </div>
                 <div className="text-right">
                   <span className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">
-                    {details.price}
+                    {displayPrice}
                   </span>
-                  {tier !== 'payg' && (
+                  {!isPayg && (
                     <span className="text-gray-500 dark:text-white/50 text-sm">/mo</span>
                   )}
                 </div>
@@ -217,7 +219,7 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
                 </div>
                 <div className="flex items-center justify-between p-4 rounded-xl bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20">
                   <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">Total</span>
-                  <span className="text-lg font-bold text-indigo-700 dark:text-indigo-300">{details.price}</span>
+                  <span className="text-lg font-bold text-indigo-700 dark:text-indigo-300">{displayPrice}</span>
                 </div>
               </div>
 
@@ -241,13 +243,13 @@ export default function PaymentPage({ tier, onBack, userEmail, onPaymentSuccess 
                 ) : (
                   <>
                     <Lock className="w-5 h-5" />
-                    Pay {details.price} with Paystack
+                    Pay {displayPrice} with Paystack
                   </>
                 )}
               </button>
 
-              <p className="mt-4 text-center text-xs text-gray-400 dark:text-gray-500">
-                Secure payment powered by Paystack. All payment methods accepted.
+              <p className="mt-4 text-center text-[10px] text-gray-400 dark:text-gray-500">
+                * Payment will be processed in GHS (converted from USD) using live market exchange rates. Secure payment powered by Paystack.
               </p>
             </div>
           </div>

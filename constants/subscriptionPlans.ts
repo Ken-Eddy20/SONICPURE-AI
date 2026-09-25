@@ -1,4 +1,4 @@
-export type SubscriptionTier = 'payg' | 'pro' | 'unlimited';
+export type SubscriptionTier = 'payg' | 'pro' | 'audio_master';
 
 export const TIER_DETAILS: Record<SubscriptionTier, {
   name: string;
@@ -11,13 +11,14 @@ export const TIER_DETAILS: Record<SubscriptionTier, {
 }> = {
   payg: {
     name: 'Pay As You Go',
-    price: '$5',
-    priceAmount: 5,
-    period: '150 credits (never expire)',
-    description: 'For occasional creators who need flexibility.',
+    price: 'Flexible',
+    priceAmount: 0, // Dynamic
+    period: '$1 per 20 credits',
+    description: 'Buy exactly the credits you need. Minimum $1.',
     features: [
-      '150 credits (never expire)',
-      'Unlimited daily enhances',
+      'Custom credit amount',
+      'Never expire',
+      '4 highlights enhancements per day',
       '30 mins max audio length',
       'High priority processing',
     ],
@@ -30,7 +31,7 @@ export const TIER_DETAILS: Record<SubscriptionTier, {
     period: '/month',
     description: 'For professional workflows.',
     features: [
-      '2500 credits / month',
+      '600 credits / month',
       'Extract audio from video',
       '50 mins max audio length',
       'Advanced noise profiles',
@@ -39,14 +40,14 @@ export const TIER_DETAILS: Record<SubscriptionTier, {
     ],
     cta: 'Subscribe Now',
   },
-  unlimited: {
-    name: 'Unlimited Studio',
+  audio_master: {
+    name: 'Audio Master Studio',
     price: '$60',
     priceAmount: 60,
     period: '/month',
     description: 'The ultimate package for studios and heavy users.',
     features: [
-      'Unlimited Credits',
+      '2000 Credits / month',
       'Multiple Uploads',
       'Highest Tier Enhancement',
       'Auto balance of volume',
@@ -55,6 +56,6 @@ export const TIER_DETAILS: Record<SubscriptionTier, {
       'Audio restoration',
       'Priority support',
     ],
-    cta: 'Get Unlimited',
+    cta: 'Get Audio Master',
   },
 };

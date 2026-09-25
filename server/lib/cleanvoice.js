@@ -1,33 +1,23 @@
 import { Cleanvoice } from '@cleanvoice/cleanvoice-sdk';
+import util from 'util';
 
 /**
  * 80% QUALITY CONFIG (free and payg)
  */
 const noise_removal_80 = {
   remove_noise: true,
-  normalize: true,
-  studio_sound: false,
-  enhanceSpeech: false,
-  fillers: false,
-  long_silences: false
+  normalize: true
 };
 
 const audio_enhancement_80 = {
-  remove_noise: true,
-  normalize: true,
-  studio_sound: false,
-  enhanceSpeech: false,
-  fillers: false,
-  long_silences: false
+  studio_sound: true,
+  normalize: true
 };
 
 const voice_clarity_80 = {
-  remove_noise: true,
+  studio_sound: true,
   normalize: true,
-  studio_sound: false,
-  enhanceSpeech: false,
-  fillers: false,
-  long_silences: false
+  breath: true
 };
 
 /**
@@ -35,29 +25,20 @@ const voice_clarity_80 = {
  */
 const noise_removal_100 = {
   remove_noise: true,
-  normalize: true,
-  studio_sound: false,
-  enhanceSpeech: false,
-  fillers: false,
-  long_silences: false
+  normalize: true
 };
 
 const audio_enhancement_100 = {
-  remove_noise: true,
-  normalize: true,
-  studio_sound: "nightly",
-  enhanceSpeech: true,
-  fillers: false,
-  long_silences: true
+  studio_sound: true,
+  normalize: true
 };
 
 const voice_clarity_100 = {
-  remove_noise: true,
+  studio_sound: true,
   normalize: true,
-  studio_sound: "nightly",
-  enhanceSpeech: true,
   fillers: true,
-  long_silences: true
+  long_silences: true,
+  breath: true
 };
 
 const CONFIGS = {
@@ -91,7 +72,6 @@ export async function processAudioCleaning(cloudinaryUrl, feature, plan) {
   }
 
   const config = CONFIGS[qualityLevel][featureKey];
-  config.export_format = 'wav';
 
   const client = new Cleanvoice({ apiKey: key });
 
@@ -99,8 +79,10 @@ export async function processAudioCleaning(cloudinaryUrl, feature, plan) {
   console.log('Sending to Cleanvoice API:', config);
 
   try {
-    // SDK supports processing a URL directly
-    const result = await client.process(cloudinaryUrl, { config });
+    const secureUrl = cloudinaryUrl.replace('http://', 'https://');
+    console.log(`[Cleanvoice] Sending request:`, { url: secureUrl, feature: featureKey, quality: qualityLevel });
+    const result = await client.process(secureUrl, config);
+    console.log(`[Cleanvoice] Response received:`, result);
 
     if (!result || !result.audio) {
        throw new Error('Cleanvoice AI returned no result data.');
@@ -111,7 +93,15 @@ export async function processAudioCleaning(cloudinaryUrl, feature, plan) {
       qualityLevel,
     };
   } catch (err) {
-    throw new Error(err.message || 'Processing failed at Cleanvoice API');
+    console.error('Cleanvoice process error raw:', err);
+    // SDK errors might be complex objects with a .response or .detail
+    let detail = '';
+    try {
+      detail = JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
+    } catch (e) {
+      detail = String(err);
+    }
+    throw new Error(err.message && err.message !== '[object Object]' ? err.message : detail);
   }
 }
 

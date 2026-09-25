@@ -161,7 +161,13 @@ export async function convertToWav(blob: Blob): Promise<Blob> {
  * Convert an audio blob to MP3 format. Used for downloads.
  */
 export async function convertBlobToMp3(blob: Blob): Promise<Blob> {
-  const { Mp3Encoder } = await import('lamejs');
+  const lamejsModule = await import('lamejs');
+  const Mp3Encoder = lamejsModule.Mp3Encoder || (lamejsModule.default && lamejsModule.default.Mp3Encoder);
+  
+  if (!Mp3Encoder) {
+    throw new Error("Mp3Encoder could not be loaded");
+  }
+
   const arrayBuffer = await blob.arrayBuffer();
   const audioCtx = new AudioContext();
   const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
