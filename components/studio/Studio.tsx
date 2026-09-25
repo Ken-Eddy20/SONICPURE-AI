@@ -9,6 +9,7 @@ import Composer, { type PlanLimits, type QueuedFile } from './Composer';
 import JobDetail, { type ClientJob } from './JobDetail';
 import Library from './Library';
 import Pricing from '../Pricing';
+import ChurchView from '../church/ChurchView';
 import { PLAN_NAMES } from '../../shared/processing.js';
 
 export interface UserSnapshot {
@@ -18,6 +19,8 @@ export interface UserSnapshot {
   dailyEnhancesUsed: number;
   /** UTC day ("YYYY-MM-DD") the daily counter belongs to. */
   dailyEnhancesDate: string;
+  /** Credits and plan come from the church's shared pool. */
+  churchBilling: boolean;
 }
 
 interface StudioProps {
@@ -172,7 +175,15 @@ export default function Studio({ user, account, onChoosePlan, onSignOut }: Studi
 
   return (
     <div className="min-h-screen">
-      <AppHeader user={user} plan={account.plan} credits={account.credits} view={view} onView={setView} onSignOut={onSignOut} />
+      <AppHeader
+        user={user}
+        plan={account.plan}
+        credits={account.credits}
+        churchBilling={account.churchBilling}
+        view={view}
+        onView={setView}
+        onSignOut={onSignOut}
+      />
 
       {banner && (
         <div className="mx-auto mt-4 max-w-7xl px-4 sm:px-6">
@@ -183,7 +194,11 @@ export default function Studio({ user, account, onChoosePlan, onSignOut }: Studi
         </div>
       )}
 
-      {view === 'studio' ? (
+      {view === 'church' ? (
+        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+          <ChurchView onChoosePlan={onChoosePlan} onChurchChanged={() => undefined} />
+        </main>
+      ) : view === 'studio' ? (
         <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 sm:py-8 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="min-w-0">
             {selected ? (

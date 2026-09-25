@@ -119,3 +119,11 @@ export function attachmentUrl(url: string, baseName: string) {
 export function baseName(name: string) {
   return name.replace(/\.[^.]+$/, '');
 }
+
+function vttTime(seconds: number) {
+  return srtTime(seconds).replace(',', '.');
+}
+
+export function toVtt(segments: { start: number; end: number; text: string }[]) {
+  return `WEBVTT\n\n${segments.map((s) => `${vttTime(s.start)} --> ${vttTime(s.end)}\n${s.text.trim()}\n`).join('\n')}`;
+}

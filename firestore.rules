@@ -57,5 +57,33 @@ service cloud.firestore {
       allow read: if signedIn() && resource.data.userId == request.auth.uid;
       allow write: if false;
     }
+
+    // Church accounts: members can read their church (shared credit balance, plan).
+    // All changes go through the API, which checks roles.
+    match /churches/{churchId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
+      allow write: if false;
+
+      match /members/{memberId} {
+        allow read: if signedIn()
+                    && request.auth.uid in get(/databases/$(database)/documents/churches/$(churchId)).data.memberIds;
+        allow write: if false;
+      }
+    }
+
+    // Served only through the API (which checks church membership and file access).
+    match /sermons/{sermonId} {
+      allow read, write: if false;
+    }
+
+    match /transcripts/{transcriptId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    match /captionJobs/{jobId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
   }
 }

@@ -85,12 +85,35 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     isActive: true,
     qualityLevel: 100,
   },
+  church: {
+    planId: 'church',
+    name: 'Church',
+    tagline: 'Sermon studio, podcast feed and shared credits for your media team',
+    price: 35,
+    billingCycle: 'monthly',
+    credits: 1500,
+    isUnlimited: false,
+    maxDailyEnhances: -1,
+    maxAudioLengthMins: 150,
+    processingSpeed: 'high_priority',
+    extractAudioFromVideo: true,
+    multipleUploads: true,
+    advancedNoiseProfiles: true,
+    maxMembers: 5,
+    isActive: true,
+    qualityLevel: 100,
+  },
 };
+
+// `--only church,pro` seeds just those plans and leaves the others untouched.
+const onlyArg = process.argv.find((a) => a.startsWith('--only'));
+const only = onlyArg ? (onlyArg.split('=')[1] || process.argv[process.argv.indexOf(onlyArg) + 1] || '').split(',') : null;
 
 async function seed() {
   console.log('Seeding creditPlans collection...\n');
 
   for (const [docId, data] of Object.entries(creditPlans)) {
+    if (only && !only.includes(docId)) continue;
     const ref = db.collection('creditPlans').doc(docId);
     const snapshot = await ref.get();
 
@@ -109,6 +132,10 @@ async function seed() {
   console.log('  - transactions   (on payment)');
   console.log('  - usageLogs      (on audio processing)');
   console.log('  - audioFiles     (on file upload)');
+  console.log('  - churches       (Church tab: church account, members subcollection)');
+  console.log('  - sermons        (Church tab: sermons linked to audioFiles)');
+  console.log('  - transcripts    (local-language transcripts and translations)');
+  console.log('  - captionJobs    (burned-in video captions)');
 }
 
 seed().catch((err) => {

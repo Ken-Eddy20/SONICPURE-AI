@@ -6,7 +6,13 @@ import ThemeToggle from '../ui/ThemeToggle';
 import type { Plan } from '../../services/api';
 import { PLAN_NAMES } from '../../shared/processing.js';
 
-export type StudioView = 'studio' | 'plans';
+export type StudioView = 'studio' | 'church' | 'plans';
+
+const VIEWS: [StudioView, string][] = [
+  ['studio', 'Studio'],
+  ['church', 'Church'],
+  ['plans', 'Plans & credits'],
+];
 
 const PLAN_LABEL = PLAN_NAMES as Record<Plan, string>;
 
@@ -14,12 +20,14 @@ interface AppHeaderProps {
   user: User;
   plan: Plan;
   credits: number | null;
+  /** True when credits come from the church's shared pool. */
+  churchBilling?: boolean;
   view: StudioView;
   onView: (view: StudioView) => void;
   onSignOut: () => void;
 }
 
-export default function AppHeader({ user, plan, credits, view, onView, onSignOut }: AppHeaderProps) {
+export default function AppHeader({ user, plan, credits, churchBilling, view, onView, onSignOut }: AppHeaderProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -45,7 +53,7 @@ export default function AppHeader({ user, plan, credits, view, onView, onSignOut
         <Logo onClick={() => onView('studio')} />
 
         <nav className="ml-2 hidden items-center gap-1 rounded-full border border-line bg-surface p-1 sm:flex">
-          {(['studio', 'plans'] as StudioView[]).map((v) => (
+          {VIEWS.map(([v, label]) => (
             <button
               key={v}
               type="button"
@@ -54,7 +62,7 @@ export default function AppHeader({ user, plan, credits, view, onView, onSignOut
                 view === v ? 'bg-ink text-bg' : 'text-muted hover:text-ink'
               }`}
             >
-              {v === 'studio' ? 'Studio' : 'Plans & credits'}
+              {label}
             </button>
           ))}
         </nav>
@@ -68,7 +76,7 @@ export default function AppHeader({ user, plan, credits, view, onView, onSignOut
           >
             <Coins className="h-4 w-4 text-accent" />
             {credits === null ? '…' : Math.max(0, credits).toLocaleString()}
-            <span className="hidden text-muted md:inline">credits</span>
+            <span className="hidden text-muted md:inline">{churchBilling ? 'church credits' : 'credits'}</span>
           </button>
           <ThemeToggle />
 
@@ -109,14 +117,14 @@ export default function AppHeader({ user, plan, credits, view, onView, onSignOut
       </div>
 
       <nav className="flex gap-1 border-t border-line/70 px-4 py-2 sm:hidden">
-        {(['studio', 'plans'] as StudioView[]).map((v) => (
+        {VIEWS.map(([v, label]) => (
           <button
             key={v}
             type="button"
             onClick={() => onView(v)}
             className={`flex-1 rounded-full py-1.5 text-sm font-semibold ${view === v ? 'bg-ink text-bg' : 'text-muted'}`}
           >
-            {v === 'studio' ? 'Studio' : 'Plans & credits'}
+            {label}
           </button>
         ))}
       </nav>

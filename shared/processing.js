@@ -4,15 +4,19 @@
  * Keep this file dependency-free so both runtimes can import it.
  */
 
-export const PLAN_IDS = ['free', 'payg', 'pro', 'audio_master'];
-export const PREMIUM_PLANS = ['pro', 'audio_master'];
+export const PLAN_IDS = ['free', 'payg', 'pro', 'audio_master', 'church'];
+export const PREMIUM_PLANS = ['pro', 'audio_master', 'church'];
 
 export const PLAN_NAMES = {
   free: 'Free',
   payg: 'Pay As You Go',
   pro: 'Pro',
   audio_master: 'Audio Master',
+  church: 'Church',
 };
+
+/** Church plan: one shared credit pool for the whole media team. */
+export const CHURCH_MAX_MEMBERS = 5;
 
 /** Pay As You Go pricing: $1 buys 20 credits, minimum 20 credits. */
 export const PAYG_CREDITS_PER_USD = 20;
@@ -20,7 +24,75 @@ export const PAYG_MIN_CREDITS = 20;
 export const PAYG_MAX_CREDITS = 10000;
 
 /** Credits added each time a subscription plan is paid. */
-export const PLAN_CREDITS = { pro: 600, audio_master: 2000 };
+export const PLAN_CREDITS = { pro: 600, audio_master: 2000, church: 1500 };
+
+// ─── Transcripts, translation and captions (Khaya AI) ────────────
+
+/** Spoken languages offered for transcription (Khaya ASR v3 codes, ISO 639-3). Ghana first. */
+export const TRANSCRIBE_LANGUAGES = [
+  { code: 'eng', name: 'English' },
+  { code: 'twi', name: 'Twi (Asante)' },
+  { code: 'atw', name: 'Twi (Akuapem)' },
+  { code: 'fat', name: 'Fante' },
+  { code: 'gaa', name: 'Ga' },
+  { code: 'ewe', name: 'Ewe' },
+  { code: 'dag', name: 'Dagbani' },
+  { code: 'hau', name: 'Hausa' },
+  { code: 'nzi', name: 'Nzema' },
+  { code: 'ada', name: 'Dangme' },
+  { code: 'gur', name: 'Gurene' },
+  { code: 'kus', name: 'Kusaal' },
+  { code: 'dga', name: 'Dagaare' },
+  { code: 'gjn', name: 'Gonja' },
+  { code: 'pcm', name: 'Pidgin' },
+  { code: 'yor', name: 'Yoruba' },
+  { code: 'fra', name: 'French' },
+];
+
+/** Languages Khaya can translate to and from English. */
+export const TRANSLATE_LANGUAGES = ['eng', 'twi', 'fat', 'gaa', 'ewe', 'dag', 'gur', 'kus', 'yor'];
+
+export const TRANSCRIBE_CREDITS_PER_MIN = 2;
+export const TRANSLATE_CREDITS_PER_MIN = 1;
+export const CAPTION_CREDITS_PER_MIN = 2;
+/** Burning captions re-encodes the video on our server, so keep it to social-length videos. */
+export const CAPTION_MAX_MINUTES = 20;
+
+export const CAPTION_STYLES = {
+  classic: { name: 'Classic', hint: 'White text, dark outline' },
+  boxed: { name: 'Boxed', hint: 'White on a dark box' },
+  social: { name: 'Social', hint: 'Big yellow text for TikTok and Reels' },
+};
+export const CAPTION_POSITIONS = ['bottom', 'middle', 'top'];
+export const CAPTION_SIZES = ['small', 'medium', 'large'];
+
+export function languageName(code) {
+  return TRANSCRIBE_LANGUAGES.find((l) => l.code === code)?.name || code;
+}
+
+/**
+ * Translation pairs go through English: eng→X or X→eng. Returns null when unsupported.
+ * @param {string} from
+ * @param {string} to
+ */
+export function translationPair(from, to) {
+  if (!from || !to || from === to) return null;
+  // Akuapem Twi transcripts translate with the Twi model.
+  const src = from === 'atw' ? 'twi' : from;
+  if (!TRANSLATE_LANGUAGES.includes(src) || !TRANSLATE_LANGUAGES.includes(to)) return null;
+  if (src !== 'eng' && to !== 'eng') return null;
+  return `${src}-${to}`;
+}
+
+export function estimateTranscriptCredits(durationSeconds, translate) {
+  const minutes = Math.max(1, Math.ceil((durationSeconds || 60) / 60));
+  return minutes * (TRANSCRIBE_CREDITS_PER_MIN + (translate ? TRANSLATE_CREDITS_PER_MIN : 0));
+}
+
+export function estimateCaptionCredits(durationSeconds) {
+  return Math.max(1, Math.ceil((durationSeconds || 60) / 60)) * CAPTION_CREDITS_PER_MIN;
+}
+
 
 /** @param {string | null | undefined} plan */
 export function isPremiumPlan(plan) {
@@ -226,3 +298,14 @@ export function buildCleanvoiceConfig(feature, options, plan) {
 
   return { config, qualityLevel: premium ? 100 : 80 };
 }
+
+/** Settings used for every sermon: podcast loudness, MP3, worship songs protected, notes on. */
+export const SERMON_FEATURE = 'voice_clarity';
+export const SERMON_OPTIONS = {
+  exportFormat: 'mp3',
+  loudness: 'podcast',
+  keepMusic: true,
+  aiNotes: true,
+  returnVideo: false,
+  custom: DEFAULT_CUSTOM,
+};

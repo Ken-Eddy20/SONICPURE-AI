@@ -17,6 +17,36 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 - **Plans:** Free (50 credits), Pay As You Go ($1 per 20 credits, any amount), Pro ($20, 600 credits), Audio Master ($60, 2,000 credits). Prices in USD, charged in GHS at the live rate via Paystack.
 - Credit cost shown before every job; failed jobs refund automatically.
 
+## Church package
+
+- **Church account:** one owner plus up to 5 team members joining with an invite code (WhatsApp share button). Credits come from a shared pool on the church.
+- **Church plan:** $35/month, 1,500 shared credits, files up to 150 minutes, all Pro features. Paid by the church owner via Paystack; credits go to the church, not the user.
+- **Sermon Studio:** upload a service recording; it is cleaned with Podcast Polish at podcast loudness, worship songs protected, with title, summary, chapters and social posts.
+- **Podcast feed:** `GET /feeds/church/<churchId>.xml` is a public RSS feed (Apple/Spotify format). Publishing a sermon adds it to the feed.
+
+## Local-language transcripts and captions (Khaya AI)
+
+- Transcribe in English, Twi (Asante and Akuapem), Fante, Ga, Ewe, Dagbani, Hausa, Nzema, Dangme, Gurene, Kusaal, Dagaare, Gonja, Pidgin, Yoruba and French via the Khaya ASR v3 API.
+- Translate to or from English (Twi, Fante, Ga, Ewe, Dagbani, Gurene, Kusaal, Yoruba). Export TXT, SRT and VTT.
+- Burn captions onto videos (up to 20 minutes) in three styles with ffmpeg; the result is saved to Cloudinary.
+- Costs: transcript 2 credits/min, translation +1/min, captions 2/min. Failed jobs refund automatically, and jobs interrupted by a server restart are refunded on startup.
+- Needs `KHAYA_API_KEY` on the server. Without it the feature shows as switched off.
+
+## Firestore collections
+
+| Collection | Written by | Purpose |
+|---|---|---|
+| `users` | client (create only), server | Plan, credits, daily counter, `churchId` |
+| `creditPlans` | seed script | Plan limits and prices (`free`, `payg`, `pro`, `audio_master`, `church`) |
+| `audioFiles` | server | Uploads and cleaning jobs (`churchId` when uploaded by a church member) |
+| `churches` (+ `members`) | server | Church account, shared credits, invite code, podcast settings |
+| `sermons` | server | Sermon details linked to an `audioFiles` doc, draft/published |
+| `transcripts` | server | Khaya transcripts and translations with timed segments |
+| `captionJobs` | server | Burned-in caption renders |
+| `transactions`, `usageLogs` | server | Payments and usage history |
+
+Seed or update a single plan without touching the others: `npx tsx scripts/seedFirestore.ts --only church`
+
 ## How processing works
 
 1. `POST /api/audio/upload` stores the file in Cloudinary and records its duration.

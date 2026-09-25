@@ -6,6 +6,7 @@ import { PROFILES } from '../../shared/processing.js';
 import { getJob, type AudioJob } from '../../services/api';
 import { attachmentUrl, baseName, downloadText, formatDuration, toSrt } from '../../services/media';
 import ComparePlayer from './ComparePlayer';
+import TranscriptsPanel from './TranscriptsPanel';
 
 export interface ClientJob extends AudioJob {
   uploadPercent?: number;
@@ -65,7 +66,12 @@ export default function JobDetail({ job, onBack, onDelete, onUpgrade }: JobDetai
           />
         )}
         {job.status === 'failed' && <Failed job={job} onUpgrade={onUpgrade} />}
-        {job.status === 'processed' && job.processedFileUrl && <Result job={job} />}
+        {job.status === 'processed' && job.processedFileUrl && (
+          <div className="space-y-5">
+            <Result job={job} />
+            <TranscriptsPanel job={job} onUpgrade={onUpgrade} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -166,7 +172,7 @@ function Result({ job: initial }: { job: ClientJob }) {
 
 type NotesTab = 'summary' | 'chapters' | 'transcript' | 'social';
 
-function Notes({ job }: { job: AudioJob }) {
+export function Notes({ job }: { job: AudioJob }) {
   const [tab, setTab] = useState<NotesTab>('summary');
   if (job.transcript === undefined) {
     return (

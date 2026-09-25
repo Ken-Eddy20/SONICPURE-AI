@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   ArrowRight, AudioLines, Wind, MessageSquareOff, Repeat, MousePointerClick, Timer, SlidersHorizontal,
   Volume2, Music2, FileText, ListTree, Share2, Upload, Wand2, Download, Church, GraduationCap, Mic,
-  Users, Clapperboard, Smartphone, Plus, Minus, ShieldCheck, Clock, Sparkles,
+  Users, Clapperboard, Smartphone, Plus, Minus, ShieldCheck, Clock, Sparkles, Languages, Captions, Podcast, Radio,
 } from 'lucide-react';
 import Logo from '../ui/Logo';
 import ThemeToggle from '../ui/ThemeToggle';
@@ -88,7 +88,8 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
           <Logo onClick={() => window.scrollTo({ top: 0 })} />
           <nav className="hidden items-center gap-7 text-sm font-semibold text-muted md:flex">
             <a href="#fixes" className="hover:text-ink">What it fixes</a>
-            <a href="#notes" className="hover:text-ink">AI show notes</a>
+            <a href="#church" className="hover:text-ink">For churches</a>
+            <a href="#languages" className="hover:text-ink">Local languages</a>
             <a href="#pricing" className="hover:text-ink">Pricing</a>
             <a href="#faq" className="hover:text-ink">FAQ</a>
           </nav>
@@ -241,6 +242,76 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
                 </p>
               </div>
               <p className="mt-3 text-center text-xs text-faint">Example output</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Church package */}
+        <section id="church" className="scroll-mt-20 mx-auto max-w-6xl px-4 pb-20 sm:px-6">
+          <div className="overflow-hidden rounded-[2rem] bg-ink text-bg">
+            <div className="grid gap-10 p-8 sm:p-12 lg:grid-cols-2">
+              <div>
+                <span className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase tracking-wider">
+                  <Church className="h-3.5 w-3.5" /> Church package
+                </span>
+                <h2 className="mt-5 text-3xl font-extrabold tracking-tight sm:text-4xl">
+                  Sunday’s sermon, <span className="display italic text-accent">ready by Monday.</span>
+                </h2>
+                <p className="mt-4 leading-relaxed opacity-75">
+                  Upload the service recording. SonicPure removes generator hum and crowd noise, keeps the worship songs,
+                  writes the title, summary and chapters, and publishes it to your church podcast.
+                </p>
+                <button type="button" onClick={() => onChoosePlan('church')} className="btn-primary mt-8 px-7 py-3.5 text-base">
+                  See the Church plan <ArrowRight className="h-4 w-4" />
+                </button>
+              </div>
+              <ul className="grid gap-3 sm:grid-cols-2">
+                {[
+                  { icon: Mic, title: 'Sermon Studio', text: 'Clean audio, worship kept, AI notes for every message.' },
+                  { icon: Podcast, title: 'Your own podcast', text: 'One feed for Spotify, Apple Podcasts and more.' },
+                  { icon: Users, title: 'Media team', text: 'Up to 5 people share one credit pool.' },
+                  { icon: Radio, title: 'One-click publish', text: 'New sermons reach listeners automatically.' },
+                ].map(({ icon: Icon, title, text }) => (
+                  <li key={title} className="rounded-2xl bg-white/5 p-5">
+                    <Icon className="h-5 w-5 text-accent" />
+                    <p className="mt-3 font-bold">{title}</p>
+                    <p className="mt-1 text-sm opacity-70">{text}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        {/* Local languages + captions */}
+        <section id="languages" className="scroll-mt-20 mx-auto max-w-6xl px-4 pb-20 sm:px-6">
+          <SectionHeading
+            eyebrow="Local languages"
+            title="Transcripts and captions in the languages your people speak."
+            sub="Powered by Khaya AI from GhanaNLP. Transcribe, translate to or from English, and burn captions onto your videos."
+          />
+          <div className="mt-10 grid gap-4 lg:grid-cols-3">
+            <div className="card p-6">
+              <Languages className="h-5 w-5 text-accent" />
+              <h3 className="mt-4 text-lg font-bold">Transcribe</h3>
+              <p className="mt-2 text-sm leading-relaxed text-muted">English, Twi, Fante, Ga, Ewe, Dagbani, Hausa, Nzema, Dangme, Gurene, Kusaal, Dagaare, Gonja, Pidgin and more.</p>
+            </div>
+            <div className="card p-6">
+              <Share2 className="h-5 w-5 text-accent" />
+              <h3 className="mt-4 text-lg font-bold">Translate</h3>
+              <p className="mt-2 text-sm leading-relaxed text-muted">Turn a Twi sermon into English text, or an English message into Twi, Ga, Ewe, Fante and more. Download as TXT, SRT or VTT.</p>
+            </div>
+            <div className="card overflow-hidden">
+              <div className="grid h-32 place-items-end bg-gradient-to-br from-slate-700 to-slate-900 p-4">
+                <span className="mx-auto text-center text-base font-extrabold text-[#FFE500] [text-shadow:0_0_3px_#000,0_2px_4px_#000]">Onyame yɛ ɔdɔ</span>
+              </div>
+              <div className="p-6">
+                <div className="flex items-center gap-2">
+                  <Captions className="h-5 w-5 text-accent" />
+                  <h3 className="text-lg font-bold">Captions on video</h3>
+                </div>
+                <p className="mt-2 text-sm leading-relaxed text-muted">Subtitles burned into your clip, styled for TikTok, Reels and WhatsApp status.</p>
+              </div>
             </div>
           </div>
         </section>

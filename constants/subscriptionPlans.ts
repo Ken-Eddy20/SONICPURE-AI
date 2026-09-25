@@ -1,4 +1,4 @@
-export type SubscriptionTier = 'payg' | 'pro' | 'audio_master';
+export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'church';
 
 export interface TierDetails {
   name: string;
@@ -61,6 +61,23 @@ export const TIER_DETAILS: Record<SubscriptionTier, TierDetails> = {
       'Priority support',
     ],
     cta: 'Get Audio Master',
+  },
+  church: {
+    name: 'Church',
+    price: '$35',
+    priceAmount: 35,
+    period: '/month',
+    credits: '1,500 shared credits',
+    description: 'Sermon studio and podcast for your church media team.',
+    features: [
+      '1,500 credits shared by up to 5 team members',
+      'Sermon Studio: clean audio, worship songs kept, title, summary, chapters, social posts',
+      'Your own church podcast on Spotify and Apple Podcasts',
+      'Transcripts in Twi, Fante, Ga, Ewe, Dagbani, Hausa and more, with English translation',
+      'Captions on sermon clips for WhatsApp, TikTok and Reels',
+      'Services up to 2.5 hours, video uploads, everything in Pro',
+    ],
+    cta: 'Get the Church plan',
   },
 };
 

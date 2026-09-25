@@ -1,6 +1,7 @@
 /**
- * SonicPure API: uploads to Cloudinary, cleans audio with Cleanvoice,
- * bills credits in Firestore and takes payments through Paystack (in GHS).
+ * SonicPure API: uploads to Cloudinary, cleans audio with Cleanvoice, local-language
+ * transcripts and captions with Khaya AI + ffmpeg, church accounts with a podcast
+ * feed, credits in Firestore and payments through Paystack (in GHS).
  * All secrets stay server-side.
  */
 import './env.js';
@@ -11,15 +12,18 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
 import path from 'path';
-import util from 'util';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
 import { FieldValue } from 'firebase-admin/firestore';
-import { adminAuth, adminDb } from '../lib/firebaseAdmin.js';
+import { adminDb } from '../lib/firebaseAdmin.js';
 import { uploadAudio, saveProcessedAudio, saveExtractedAudio, deleteAudio, transcodedUrl } from '../lib/cloudinary.js';
 import { extractAudioFromVideo } from '../lib/extractAudio.js';
 import { parseBuffer } from 'music-metadata';
 import { startCleanvoiceJob, checkCleanvoiceJob, extractInsights } from './lib/cleanvoice.js';
+import { HttpError, verifyAuth, sendError, diskLog, formatError, getQuotaDayKey, toDate, iso } from './lib/http.js';
+import { resolveAccount, billedTo, billingRefFor, getAccessibleFile, refundJob } from './lib/accounts.js';
+import { khayaConfigured } from './lib/khaya.js';
+import transcriptsRouter from './routes/transcripts.js';
+import captionsRouter from './routes/captions.js';
+import churchRouter from './routes/church.js';
 import {
   PROFILES,
   PLAN_CREDITS,
@@ -31,25 +35,6 @@ import {
   estimateCredits,
   buildCleanvoiceConfig,
 } from '../shared/processing.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-function diskLog(msg) {
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
-  try {
-    fs.appendFileSync(path.join(__dirname, 'server.log'), line);
-  } catch {
-    // Read-only filesystems (some hosts) still get console output.
-  }
-  console.log(msg);
-}
-
-function formatError(err) {
-  if (!err) return 'Unknown error';
-  if (typeof err === 'string') return err;
-  if (err.message && err.message !== '[object Object]') return err.message;
-  return util.inspect(err, { depth: 2, colors: false });
-}
 
 diskLog('[Startup] Cleanvoice key: ' + (process.env.CLEANVOICE_API_KEY ? `present (...${process.env.CLEANVOICE_API_KEY.slice(-4)})` : 'MISSING'));
 
@@ -70,6 +55,15 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+// Podcast feeds are public and read by Apple/Spotify servers, so they skip CORS.
+const churchRoutes = churchRouter({
+  publicBaseUrl: process.env.PUBLIC_API_URL,
+  siteUrl: process.env.PUBLIC_SITE_URL,
+  serializeFile,
+});
+app.get('/feeds/church/:id', churchRoutes.feed);
+
 app.use(
   cors({
     origin(origin, callback) {
@@ -88,7 +82,7 @@ const limiter = (limit, message) =>
     ...(message ? { message: { error: message } } : {}),
   });
 // Status polling runs every few seconds per active job, so the general limit is generous.
-const apiLimiter = limiter(900);
+const apiLimiter = limiter(1500);
 const uploadLimiter = limiter(40, 'Too many upload or processing attempts. Please wait and try again.');
 const paymentLimiter = limiter(30, 'Too many payment attempts. Please wait and try again.');
 app.use('/api', apiLimiter);
@@ -97,70 +91,25 @@ app.use((req, res, next) => {
   express.json()(req, res, next);
 });
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 120 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'SonicPure API is running' });
+  res.json({ status: 'ok', message: 'SonicPure API is running', transcripts: khayaConfigured() });
 });
 
+app.use('/api/transcripts', transcriptsRouter({ limiter: uploadLimiter }));
+app.use('/api/captions', captionsRouter({ limiter: uploadLimiter }));
+app.use('/api/church', churchRoutes.router);
+
 // ─── Helpers ─────────────────────────────────────────────────────
-
-class HttpError extends Error {
-  constructor(status, message, extra = {}) {
-    super(message);
-    this.status = status;
-    this.extra = extra;
-  }
-}
-
-async function verifyAuth(req) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    throw new HttpError(401, 'Missing or invalid Authorization header');
-  }
-  try {
-    return await adminAuth.verifyIdToken(authHeader.split('Bearer ')[1]);
-  } catch {
-    throw new HttpError(401, 'Session expired. Please sign in again.');
-  }
-}
-
-function sendError(res, err, fallback) {
-  if (err instanceof HttpError) {
-    return res.status(err.status).json({ error: err.message, ...err.extra });
-  }
-  diskLog(`[Error] ${fallback}: ${formatError(err)}`);
-  return res.status(500).json({ error: formatError(err) || fallback });
-}
-
-/** UTC day key used for the daily enhancement counter, e.g. "2026-09-25". */
-function getQuotaDayKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
 
 function enhancesUsedToday(user) {
   return user.dailyEnhancesDate === getQuotaDayKey() ? user.dailyEnhancesUsed || 0 : 0;
 }
 
-function toDate(value) {
-  if (!value) return null;
-  if (value instanceof Date) return value;
-  if (typeof value.toDate === 'function') return value.toDate();
-  return new Date(value);
-}
-
 async function loadPlan(planName) {
   const snap = await adminDb.collection('creditPlans').doc(planName).get();
   return snap.exists ? snap.data() : { maxDailyEnhances: 2, maxAudioLengthMins: 20, extractAudioFromVideo: false };
-}
-
-async function getOwnedFile(fileId, userId) {
-  const ref = adminDb.collection('audioFiles').doc(fileId);
-  const snap = await ref.get();
-  if (!snap.exists) throw new HttpError(404, 'File not found');
-  const data = snap.data();
-  if (data.userId !== userId) throw new HttpError(403, 'Not authorized');
-  return { ref, data };
 }
 
 /** Public shape of an audioFiles doc. `full` adds transcript and AI notes. */
@@ -175,6 +124,7 @@ function serializeFile(id, d, full = true) {
     originalFileName: d.originalFileName,
     sourceType: d.sourceType,
     originalFileUrl: d.extractedAudioUrl || d.originalFileUrl,
+    originalVideoUrl: d.sourceType === 'video' ? d.originalFileUrl : null,
     processedFileUrl: d.processedFileUrl || null,
     processedIsVideo: Boolean(d.processedIsVideo),
     durationSeconds: d.durationSeconds || 0,
@@ -183,9 +133,10 @@ function serializeFile(id, d, full = true) {
     qualityLevel: d.qualityLevel || null,
     statistics: d.statistics || null,
     hasNotes: Boolean(d.transcript || d.summary),
+    churchId: d.churchId || null,
     error: d.error || null,
-    createdAt: toDate(d.createdAt)?.toISOString() || null,
-    expiresAt: toDate(d.expiresAt)?.toISOString() || null,
+    createdAt: iso(d.createdAt),
+    expiresAt: iso(d.expiresAt),
   };
   if (!full) return base;
   return { ...base, transcript: d.transcript || null, summary: d.summary || null, social: d.social || null };
@@ -198,11 +149,8 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
     const { uid: userId } = await verifyAuth(req);
     if (!req.file) throw new HttpError(400, 'No file provided');
 
-    const userSnap = await adminDb.collection('users').doc(userId).get();
-    if (!userSnap.exists) throw new HttpError(404, 'User not found');
-    const userData = userSnap.data();
-    const planName = (userData.plan || 'free').toLowerCase();
-    const planData = await loadPlan(planName);
+    const account = await resolveAccount(userId);
+    const planData = await loadPlan(account.plan);
 
     // Mime type wins over extension: a browser recording is audio/webm, not a video.
     const ext = path.extname(req.file.originalname || '').toLowerCase();
@@ -215,12 +163,12 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
       throw new HttpError(400, 'Unsupported file type. Please upload an audio or video file.');
     }
     if (isVideo && !planData.extractAudioFromVideo) {
-      throw new HttpError(403, 'Video uploads are available on Pro and Audio Master.', { upgrade: true });
+      throw new HttpError(403, 'Video uploads are available on Pro, Audio Master and Church.', { upgrade: true });
     }
 
     // Fail fast before spending bandwidth on a job that will be rejected.
     const maxDaily = planData.maxDailyEnhances ?? -1;
-    if (maxDaily !== -1 && enhancesUsedToday(userData) >= maxDaily) {
+    if (maxDaily !== -1 && enhancesUsedToday(account.user) >= maxDaily) {
       throw new HttpError(429, `You have used all ${maxDaily} enhancements for today. Upgrade for more.`, { upgrade: true });
     }
 
@@ -254,6 +202,7 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
     const now = new Date();
     const docRef = await adminDb.collection('audioFiles').add({
       userId,
+      churchId: account.kind === 'church' ? account.churchId : null,
       originalFileName: req.file.originalname || 'audio',
       originalFileUrl: secure_url,
       originalPublicId: public_id,
@@ -292,48 +241,45 @@ app.post('/api/audio/process', uploadLimiter, async (req, res) => {
     if (!fileId || !PROFILES[feature]) throw new HttpError(400, 'fileId and a valid feature are required');
     const options = normalizeOptions(req.body.options);
 
-    const { ref: fileRef } = await getOwnedFile(fileId, userId);
-    const userRef = adminDb.collection('users').doc(userId);
+    const { ref: fileRef } = await getAccessibleFile(fileId, userId);
 
     const job = await adminDb.runTransaction(async (tx) => {
-      const [userSnap, fileSnap] = await Promise.all([tx.get(userRef), tx.get(fileRef)]);
-      if (!userSnap.exists) throw new HttpError(404, 'User not found');
+      const account = await resolveAccount(userId, tx);
+      const fileSnap = await tx.get(fileRef);
       const file = fileSnap.data();
       if (!['uploaded', 'uploading'].includes(file.status)) {
         throw new HttpError(409, 'This file is already processing or finished.');
       }
-
-      const user = userSnap.data();
-      const planName = (user.plan || 'free').toLowerCase();
-      const planSnap = await tx.get(adminDb.collection('creditPlans').doc(planName));
+      const planSnap = await tx.get(adminDb.collection('creditPlans').doc(account.plan));
       const planData = planSnap.exists ? planSnap.data() : { maxDailyEnhances: 2 };
 
       if (file.sourceType !== 'video') options.returnVideo = false;
-      const restriction = planRestriction(feature, options, planName);
+      const restriction = planRestriction(feature, options, account.plan);
       if (restriction) throw new HttpError(403, restriction, { upgrade: true });
 
-      const usedToday = enhancesUsedToday(user);
+      const usedToday = enhancesUsedToday(account.user);
       const maxDaily = planData.maxDailyEnhances ?? -1;
       if (maxDaily !== -1 && usedToday >= maxDaily) {
         throw new HttpError(429, `You have used all ${maxDaily} enhancements for today. Upgrade for more.`, { upgrade: true });
       }
 
       const cost = estimateCredits(feature, file.durationSeconds, options);
-      const balance = Number(user.credits || 0);
-      if (balance < cost) {
-        throw new HttpError(402, `This job needs ${cost} credits. You have ${balance}.`, {
+      if (account.credits < cost) {
+        throw new HttpError(402, `This job needs ${cost} credits. You have ${account.credits}.`, {
           creditsNeeded: cost,
-          creditsAvailable: balance,
+          creditsAvailable: account.credits,
           upgrade: true,
         });
       }
 
-      const { config, qualityLevel } = buildCleanvoiceConfig(feature, options, planName);
+      const { config, qualityLevel } = buildCleanvoiceConfig(feature, options, account.plan);
       const now = new Date();
 
-      tx.update(userRef, {
-        credits: balance - cost,
+      tx.update(account.billingRef, {
+        credits: account.credits - cost,
         creditsUsedThisMonth: FieldValue.increment(cost),
+      });
+      tx.update(account.userRef, {
         dailyEnhancesDate: getQuotaDayKey(),
         dailyEnhancesUsed: usedToday + 1,
         dailyEnhancesResetAt: now,
@@ -343,6 +289,7 @@ app.post('/api/audio/process', uploadLimiter, async (req, res) => {
         feature,
         options,
         creditsUsed: cost,
+        billedTo: billedTo(account),
         qualityLevel,
         stage: 'Queued',
         percent: 2,
@@ -360,7 +307,7 @@ app.post('/api/audio/process', uploadLimiter, async (req, res) => {
         targetUrl = transcodedUrl(file.originalPublicId, 'wav');
       }
 
-      return { cost, config, targetUrl: targetUrl.replace('http://', 'https://'), creditsRemaining: balance - cost };
+      return { cost, config, targetUrl: targetUrl.replace('http://', 'https://'), creditsRemaining: account.credits - cost };
     });
     charged = true;
 
@@ -377,7 +324,7 @@ app.post('/api/audio/process', uploadLimiter, async (req, res) => {
   } catch (err) {
     if (charged && fileId) {
       diskLog(`[Process Error] [${fileId}] ${formatError(err)}`);
-      await failJob(adminDb.collection('audioFiles').doc(fileId), formatError(err)).catch((e) =>
+      await failAudioJob(adminDb.collection('audioFiles').doc(fileId), formatError(err)).catch((e) =>
         diskLog(`[Refund Error] [${fileId}] ${formatError(e)}`),
       );
       return res.status(502).json({ error: 'Cleanvoice could not start this job. Your credits were refunded.', message: formatError(err) });
@@ -386,8 +333,8 @@ app.post('/api/audio/process', uploadLimiter, async (req, res) => {
   }
 });
 
-/** Mark a job failed and give back its credits and daily slot. Idempotent. */
-async function failJob(fileRef, reason) {
+/** Mark a cleaning job failed and give back its credits and daily slot. Idempotent. */
+async function failAudioJob(fileRef, reason) {
   let file = null;
   await adminDb.runTransaction(async (tx) => {
     const snap = await tx.get(fileRef);
@@ -397,15 +344,16 @@ async function failJob(fileRef, reason) {
       return;
     }
     const userRef = adminDb.collection('users').doc(file.userId);
-    const userSnap = await tx.get(userRef);
-    const user = userSnap.data() || {};
-    const updates = {};
+    const user = (await tx.get(userRef)).data() || {};
+    // Older jobs have no billedTo; they were billed to the uploader.
+    const billing = file.billedTo || { kind: 'user', id: file.userId };
     if (file.creditsUsed > 0) {
-      updates.credits = Number(user.credits || 0) + file.creditsUsed;
-      updates.creditsUsedThisMonth = Math.max(0, (user.creditsUsedThisMonth || 0) - file.creditsUsed);
+      tx.update(billingRefFor(billing), {
+        credits: FieldValue.increment(file.creditsUsed),
+        creditsUsedThisMonth: FieldValue.increment(-file.creditsUsed),
+      });
     }
-    if (enhancesUsedToday(user) > 0) updates.dailyEnhancesUsed = user.dailyEnhancesUsed - 1;
-    if (Object.keys(updates).length) tx.update(userRef, updates);
+    if (enhancesUsedToday(user) > 0) tx.update(userRef, { dailyEnhancesUsed: user.dailyEnhancesUsed - 1 });
     tx.update(fileRef, { status: 'failed', error: reason, creditsRefunded: file.creditsUsed || 0, creditsUsed: 0 });
   });
   if (file) {
@@ -440,6 +388,12 @@ async function finalizeJob(fileRef, result) {
     const buffer = Buffer.from(await download.arrayBuffer());
     const saved = await saveProcessedAudio(buffer, claimed.userId);
     const insights = extractInsights(result);
+    let processedDurationSeconds = null;
+    try {
+      processedDurationSeconds = (await parseBuffer(buffer)).format.duration ?? null;
+    } catch {
+      processedDurationSeconds = null;
+    }
 
     await fileRef.update({
       status: 'processed',
@@ -447,6 +401,8 @@ async function finalizeJob(fileRef, result) {
       percent: 100,
       processedFileUrl: saved.secure_url,
       processedPublicId: saved.public_id,
+      processedBytes: saved.bytes || buffer.length,
+      processedDurationSeconds,
       processedIsVideo: insights.isVideo,
       statistics: insights.statistics,
       transcript: insights.transcript,
@@ -477,7 +433,7 @@ async function finalizeJob(fileRef, result) {
 app.get('/api/audio/status/:fileId', async (req, res) => {
   try {
     const { uid } = await verifyAuth(req);
-    const { ref, data } = await getOwnedFile(req.params.fileId, uid);
+    const { ref, data } = await getAccessibleFile(req.params.fileId, uid);
 
     if (data.status === 'processing' && data.editId) {
       const check = await checkCleanvoiceJob(data.editId);
@@ -486,7 +442,7 @@ app.get('/api/audio/status/:fileId', async (req, res) => {
           await ref.update({ stage: check.stage, percent: check.percent });
         }
       } else if (check.state === 'failed') {
-        await failJob(ref, check.message);
+        await failAudioJob(ref, check.message);
       } else {
         await finalizeJob(ref, check.result);
       }
@@ -520,10 +476,13 @@ app.get('/api/audio/history', async (req, res) => {
 app.delete('/api/audio/:fileId', async (req, res) => {
   try {
     const { uid } = await verifyAuth(req);
-    const { ref, data } = await getOwnedFile(req.params.fileId, uid);
+    const { ref, data } = await getAccessibleFile(req.params.fileId, uid);
+    if (data.userId !== uid) throw new HttpError(403, 'Only the person who uploaded this file can delete it.');
     if (data.status === 'processing' || data.status === 'finalizing') {
       throw new HttpError(409, 'Wait for this file to finish processing before deleting it.');
     }
+    const sermonSnap = await adminDb.collection('sermons').where('fileId', '==', ref.id).limit(1).get();
+    if (!sermonSnap.empty) throw new HttpError(409, 'This file is a sermon. Delete the sermon in the Church tab first.');
     for (const id of [data.originalPublicId, data.processedPublicId, data.extractedPublicId]) {
       if (id) await deleteAudio(id).catch((e) => diskLog(`[Cloudinary] delete failed ${id}: ${e.message}`));
     }
@@ -565,7 +524,7 @@ app.get('/api/paystack/rate', async (req, res) => {
 // ─── Paystack ────────────────────────────────────────────────────
 
 const PAYSTACK_BASE = 'https://api.paystack.co';
-const PAID_TIERS = ['payg', 'pro', 'audio_master'];
+const PAID_TIERS = ['payg', 'pro', 'audio_master', 'church'];
 
 function getPaystackSecretKey() {
   const key = process.env.PAYSTACK_SECRET_KEY;
@@ -599,6 +558,14 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
     if (!planSnap.exists) throw new HttpError(400, 'Plan not found');
     const planData = planSnap.data();
 
+    let churchId = null;
+    if (tier === 'church') {
+      if (!userData.churchId) throw new HttpError(400, 'Create your church account in the Church tab first.');
+      const church = (await adminDb.collection('churches').doc(userData.churchId).get()).data();
+      if (church?.ownerId !== userId) throw new HttpError(403, 'Only the church account owner can pay for the Church plan.');
+      churchId = userData.churchId;
+    }
+
     let usdAmount;
     let creditsToAdd;
     if (tier === 'payg') {
@@ -627,6 +594,7 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
       metadata: {
         userId,
         tier,
+        churchId,
         creditsToAdd,
         usdAmount,
         custom_fields: [
@@ -703,34 +671,48 @@ async function applyPaymentOnce(userId, tier, txData) {
 
   const txRef = adminDb.collection('transactions').doc(String(txData.reference));
   const userRef = adminDb.collection('users').doc(userId);
+  const churchRef = tier === 'church' && meta.churchId ? adminDb.collection('churches').doc(meta.churchId) : null;
 
   await adminDb.runTransaction(async (tx) => {
-    const [existing, userSnap] = await Promise.all([tx.get(txRef), tx.get(userRef)]);
+    const reads = [tx.get(txRef), tx.get(userRef)];
+    if (churchRef) reads.push(tx.get(churchRef));
+    const [existing, userSnap, churchSnap] = await Promise.all(reads);
     if (existing.exists) return;
 
-    const user = userSnap.exists ? userSnap.data() : {};
-    const currentCredits = Math.max(0, Number(user.credits ?? 0));
-    const currentPlan = user.plan || 'free';
     const now = new Date();
+    const renewDate = new Date(now);
+    renewDate.setMonth(renewDate.getMonth() + 1);
 
-    const updates = {
-      credits: currentCredits + creditsAdded,
-      paystackCustomerId: txData.customer?.customer_code || user.paystackCustomerId || null,
-    };
-    if (tier === 'payg') {
-      // A top-up must not downgrade a Pro or Audio Master subscriber.
-      if (currentPlan === 'free') updates.plan = 'payg';
+    if (churchRef) {
+      const church = churchSnap?.exists ? churchSnap.data() : null;
+      if (!church) throw new Error(`Church ${meta.churchId} not found for payment ${txData.reference}`);
+      tx.update(churchRef, {
+        plan: 'church',
+        credits: Math.max(0, Number(church.credits || 0)) + creditsAdded,
+        creditsUsedThisMonth: 0,
+        billingRenewDate: renewDate,
+        paystackCustomerId: txData.customer?.customer_code || church.paystackCustomerId || null,
+      });
     } else {
-      const renewDate = new Date(now);
-      renewDate.setMonth(renewDate.getMonth() + 1);
-      updates.plan = tier;
-      updates.creditsUsedThisMonth = 0;
-      updates.billingRenewDate = renewDate;
+      const user = userSnap.exists ? userSnap.data() : {};
+      const updates = {
+        credits: Math.max(0, Number(user.credits ?? 0)) + creditsAdded,
+        paystackCustomerId: txData.customer?.customer_code || user.paystackCustomerId || null,
+      };
+      if (tier === 'payg') {
+        // A top-up must not downgrade a Pro or Audio Master subscriber.
+        if ((user.plan || 'free') === 'free') updates.plan = 'payg';
+      } else {
+        updates.plan = tier;
+        updates.creditsUsedThisMonth = 0;
+        updates.billingRenewDate = renewDate;
+      }
+      tx.update(userRef, updates);
     }
-    tx.update(userRef, updates);
 
     tx.set(txRef, {
       userId,
+      churchId: churchRef ? churchRef.id : null,
       paystackReference: txData.reference,
       amountPaid: txData.amount / 100,
       currency: txData.currency || 'GHS',
@@ -743,8 +725,21 @@ async function applyPaymentOnce(userId, tier, txData) {
       createdAt: now,
     });
   });
-  diskLog(`[Paystack] applied ${tier} (+${creditsAdded} credits) for ${userId}, ref ${txData.reference}`);
+  diskLog(`[Paystack] applied ${tier} (+${creditsAdded} credits) for ${churchRef ? `church ${churchRef.id}` : userId}, ref ${txData.reference}`);
   return { creditsAdded };
+}
+
+// ─── Recovery ────────────────────────────────────────────────────
+
+/** Transcript and caption jobs run in this process; any left running by a restart are refunded. */
+async function recoverInterruptedJobs() {
+  for (const collection of ['transcripts', 'captionJobs']) {
+    const snap = await adminDb.collection(collection).where('status', 'in', ['queued', 'processing']).get();
+    for (const doc of snap.docs) {
+      await refundJob(doc.ref, 'The server restarted while this was running. Your credits were refunded; please try again.');
+    }
+    if (snap.size) diskLog(`[Recovery] refunded ${snap.size} interrupted ${collection}`);
+  }
 }
 
 // ─── Server start ────────────────────────────────────────────────
@@ -753,7 +748,9 @@ const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
   diskLog(`SonicPure API server on http://localhost:${PORT}`);
   if (!process.env.CLEANVOICE_API_KEY) diskLog('WARNING: CLEANVOICE_API_KEY not set - audio processing will fail');
+  if (!khayaConfigured()) diskLog('WARNING: KHAYA_API_KEY not set - local-language transcripts and captions are disabled');
   if (!process.env.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY.includes('YOUR_SECRET_KEY')) {
     diskLog('WARNING: PAYSTACK_SECRET_KEY not set - payments will not work');
   }
+  recoverInterruptedJobs().catch((err) => diskLog('[Recovery] failed: ' + formatError(err)));
 });

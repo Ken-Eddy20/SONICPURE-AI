@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
 import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
@@ -12,7 +12,7 @@ import type { SubscriptionTier } from './constants/subscriptionPlans';
 import type { Plan } from './services/api';
 import { PLAN_IDS } from './shared/processing.js';
 
-const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master'];
+const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master', 'church'];
 
 interface Checkout {
   tier: SubscriptionTier;
@@ -32,7 +32,8 @@ function readPaymentReturn(): (Checkout & { reference: string }) | null {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [account, setAccount] = useState<UserSnapshot | null>(null);
+  const [account, setAccount] = useState<(Omit<UserSnapshot, 'churchBilling'> & { churchId: string | null }) | null>(null);
+  const [church, setChurch] = useState<{ id: string; plan: string; credits: number; creditsUsedThisMonth: number } | null>(null);
 
   const [authMode, setAuthMode] = useState<'signin' | 'signup' | null>(null);
   const [upgradeTier, setUpgradeTier] = useState<SubscriptionTier | null>(null);
@@ -88,11 +89,38 @@ export default function App() {
           creditsUsedThisMonth: d.creditsUsedThisMonth || 0,
           dailyEnhancesUsed: d.dailyEnhancesUsed || 0,
           dailyEnhancesDate: d.dailyEnhancesDate || '',
+          churchId: d.churchId || null,
         });
       },
       (err) => console.error('Firestore error:', err),
     );
   }, [user]);
+
+  // Church members on an active Church plan use the church's shared credits.
+  const churchId = account?.churchId || null;
+  useEffect(() => {
+    if (!churchId) {
+      setChurch(null);
+      return;
+    }
+    return onSnapshot(
+      doc(db, 'churches', churchId),
+      (snap) => {
+        const d = snap.data();
+        setChurch(d ? { id: snap.id, plan: d.plan, credits: Number(d.credits || 0), creditsUsedThisMonth: Number(d.creditsUsedThisMonth || 0) } : null);
+      },
+      () => setChurch(null),
+    );
+  }, [churchId]);
+
+  const effective = useMemo<UserSnapshot | null>(() => {
+    if (!account) return null;
+    const { churchId: _ignored, ...base } = account;
+    if (church?.plan === 'church') {
+      return { ...base, plan: 'church', credits: church.credits, creditsUsedThisMonth: church.creditsUsedThisMonth, churchBilling: true };
+    }
+    return { ...base, churchBilling: false };
+  }, [account, church]);
 
   // Resume a redirect-based Paystack payment once auth is known.
   useEffect(() => {
@@ -124,8 +152,8 @@ export default function App() {
 
   return (
     <>
-      {user && account ? (
-        <Studio user={user} account={account} onChoosePlan={setUpgradeTier} onSignOut={() => signOut(auth)} />
+      {user && effective ? (
+        <Studio user={user} account={effective} onChoosePlan={setUpgradeTier} onSignOut={() => signOut(auth)} />
       ) : user ? (
         <div className="grid min-h-screen place-items-center">
           <LogoMark className="h-10 w-10 animate-pulse" />
