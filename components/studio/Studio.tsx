@@ -10,6 +10,7 @@ import JobDetail, { type ClientJob } from './JobDetail';
 import Library from './Library';
 import Pricing from '../Pricing';
 import ChurchView from '../church/ChurchView';
+import MeetingsView from '../meetings/MeetingsView';
 import { PLAN_NAMES } from '../../shared/processing.js';
 
 export interface UserSnapshot {
@@ -194,7 +195,11 @@ export default function Studio({ user, account, onChoosePlan, onSignOut }: Studi
         </div>
       )}
 
-      {view === 'church' ? (
+      {view === 'meetings' ? (
+        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
+          <MeetingsView credits={account.credits} onUpgrade={goPlans} />
+        </main>
+      ) : view === 'church' ? (
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
           <ChurchView onChoosePlan={onChoosePlan} onChurchChanged={() => undefined} />
         </main>

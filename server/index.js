@@ -17,13 +17,15 @@ import { adminDb } from '../lib/firebaseAdmin.js';
 import { uploadAudio, saveProcessedAudio, saveExtractedAudio, deleteAudio, transcodedUrl } from '../lib/cloudinary.js';
 import { extractAudioFromVideo } from '../lib/extractAudio.js';
 import { parseBuffer } from 'music-metadata';
-import { startCleanvoiceJob, checkCleanvoiceJob, extractInsights } from './lib/cleanvoice.js';
+import { startCleanvoiceJob, checkCleanvoiceJob, extractInsights, cleanvoiceCredits } from './lib/cleanvoice.js';
 import { HttpError, verifyAuth, sendError, diskLog, formatError, getQuotaDayKey, toDate, iso } from './lib/http.js';
 import { resolveAccount, billedTo, billingRefFor, getAccessibleFile, refundJob } from './lib/accounts.js';
 import { khayaConfigured } from './lib/khaya.js';
 import transcriptsRouter from './routes/transcripts.js';
 import captionsRouter from './routes/captions.js';
 import churchRouter from './routes/church.js';
+import meetingsRouter from './routes/meetings.js';
+import { minutesConfigured } from './lib/claude.js';
 import {
   PROFILES,
   PLAN_CREDITS,
@@ -100,6 +102,7 @@ app.get('/', (req, res) => {
 app.use('/api/transcripts', transcriptsRouter({ limiter: uploadLimiter }));
 app.use('/api/captions', captionsRouter({ limiter: uploadLimiter }));
 app.use('/api/church', churchRoutes.router);
+app.use('/api/meetings', meetingsRouter({ limiter: uploadLimiter }));
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -731,10 +734,10 @@ async function applyPaymentOnce(userId, tier, txData) {
 
 // ─── Recovery ────────────────────────────────────────────────────
 
-/** Transcript and caption jobs run in this process; any left running by a restart are refunded. */
+/** Transcript, caption and meeting jobs run in this process; any left running by a restart are refunded. */
 async function recoverInterruptedJobs() {
-  for (const collection of ['transcripts', 'captionJobs']) {
-    const snap = await adminDb.collection(collection).where('status', 'in', ['queued', 'processing']).get();
+  for (const collection of ['transcripts', 'captionJobs', 'meetings']) {
+    const snap = await adminDb.collection(collection).where('status', 'in', ['queued', 'processing', 'uploading']).get();
     for (const doc of snap.docs) {
       await refundJob(doc.ref, 'The server restarted while this was running. Your credits were refunded; please try again.');
     }
@@ -749,8 +752,16 @@ app.listen(PORT, () => {
   diskLog(`SonicPure API server on http://localhost:${PORT}`);
   if (!process.env.CLEANVOICE_API_KEY) diskLog('WARNING: CLEANVOICE_API_KEY not set - audio processing will fail');
   if (!khayaConfigured()) diskLog('WARNING: KHAYA_API_KEY not set - local-language transcripts and captions are disabled');
+  if (!minutesConfigured()) diskLog('WARNING: ANTHROPIC_API_KEY not set - meeting minutes are disabled');
   if (!process.env.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY.includes('YOUR_SECRET_KEY')) {
     diskLog('WARNING: PAYSTACK_SECRET_KEY not set - payments will not work');
   }
   recoverInterruptedJobs().catch((err) => diskLog('[Recovery] failed: ' + formatError(err)));
+  if (process.env.CLEANVOICE_API_KEY) {
+    cleanvoiceCredits().then((credits) => {
+      if (credits === null) diskLog('WARNING: could not check the Cleanvoice account balance');
+      else if (credits <= 0) diskLog('WARNING: Cleanvoice account has 0 credits - audio cleaning and English meeting transcripts will fail until you top up at app.cleanvoice.ai');
+      else diskLog(`[Startup] Cleanvoice credits remaining: ${credits}`);
+    });
+  }
 });

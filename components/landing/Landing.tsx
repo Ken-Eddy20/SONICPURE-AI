@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   ArrowRight, AudioLines, Wind, MessageSquareOff, Repeat, MousePointerClick, Timer, SlidersHorizontal,
   Volume2, Music2, FileText, ListTree, Share2, Upload, Wand2, Download, Church, GraduationCap, Mic,
-  Users, Clapperboard, Smartphone, Plus, Minus, ShieldCheck, Clock, Sparkles, Languages, Captions, Podcast, Radio,
+  Users, Clapperboard, Smartphone, Plus, Minus, ShieldCheck, Clock, Sparkles, Languages, Captions, Podcast, Radio, ClipboardList, CheckCircle2,
 } from 'lucide-react';
 import Logo from '../ui/Logo';
 import ThemeToggle from '../ui/ThemeToggle';
@@ -88,6 +88,7 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
           <Logo onClick={() => window.scrollTo({ top: 0 })} />
           <nav className="hidden items-center gap-7 text-sm font-semibold text-muted md:flex">
             <a href="#fixes" className="hover:text-ink">What it fixes</a>
+            <a href="#meetings" className="hover:text-ink">Meetings</a>
             <a href="#church" className="hover:text-ink">For churches</a>
             <a href="#languages" className="hover:text-ink">Local languages</a>
             <a href="#pricing" className="hover:text-ink">Pricing</a>
@@ -240,6 +241,49 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
                   Most businesses don't fail from lack of ideas. They stall because nothing compounds. Here are three
                   habits we unpacked this week…
                 </p>
+              </div>
+              <p className="mt-3 text-center text-xs text-faint">Example output</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Meetings */}
+        <section id="meetings" className="scroll-mt-20 mx-auto max-w-6xl px-4 pb-20 sm:px-6">
+          <div className="card grid overflow-hidden lg:grid-cols-2">
+            <div className="p-8 sm:p-12">
+              <span className="eyebrow text-accent">Meetings</span>
+              <h2 className="mt-3 text-3xl font-extrabold tracking-tight sm:text-4xl">
+                Hours of talking, <span className="display italic">minutes to read.</span>
+              </h2>
+              <p className="mt-4 leading-relaxed text-muted">
+                Upload the recording of a board meeting, staff briefing, AGM or class, audio or video, even several hours long.
+                Get the full transcript with speakers, an English translation for Twi, Ga or Ewe meetings, and minutes you can send.
+              </p>
+              <ul className="mt-6 space-y-2 text-sm">
+                {['Transcript split by speaker, searchable, click to replay', 'Summary, decisions and action items with owners and deadlines', 'Download as Word, or copy straight into WhatsApp or email'].map((t) => (
+                  <li key={t} className="flex gap-2"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-accent" /> {t}</li>
+                ))}
+              </ul>
+              <button type="button" onClick={onSignUp} className="btn-primary mt-8 px-7 py-3.5 text-base">
+                Transcribe a meeting <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="border-t border-line bg-sunken p-6 sm:p-10 lg:border-l lg:border-t-0">
+              <div className="rounded-2xl border border-line bg-surface p-5 text-sm">
+                <p className="flex items-center gap-2 font-bold"><ClipboardList className="h-4 w-4 text-accent" /> Action items</p>
+                <table className="mt-3 w-full text-left">
+                  <tbody className="divide-y divide-line">
+                    {[
+                      ['Send revised budget to the board', 'Ama Mensah', 'Friday'],
+                      ['Book venue for the end-of-year event', 'Kwesi', '30 Oct'],
+                      ['Share attendance report', 'Admin office', 'Next meeting'],
+                    ].map(([task, owner, due]) => (
+                      <tr key={task}><td className="py-2 pr-2">{task}</td><td className="py-2 pr-2 font-semibold">{owner}</td><td className="py-2 text-muted">{due}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="eyebrow mt-5">Transcript</p>
+                <p className="mt-2 leading-relaxed text-muted"><span className="font-mono text-xs text-accent">41:07</span> <b className="text-ink">Ama Mensah:</b> I will send the revised budget by Friday so everyone can review it before we vote.</p>
               </div>
               <p className="mt-3 text-center text-xs text-faint">Example output</p>
             </div>

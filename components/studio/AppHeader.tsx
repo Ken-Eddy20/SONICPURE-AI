@@ -6,12 +6,13 @@ import ThemeToggle from '../ui/ThemeToggle';
 import type { Plan } from '../../services/api';
 import { PLAN_NAMES } from '../../shared/processing.js';
 
-export type StudioView = 'studio' | 'church' | 'plans';
+export type StudioView = 'studio' | 'meetings' | 'church' | 'plans';
 
 const VIEWS: [StudioView, string][] = [
   ['studio', 'Studio'],
+  ['meetings', 'Meetings'],
   ['church', 'Church'],
-  ['plans', 'Plans & credits'],
+  ['plans', 'Plans'],
 ];
 
 const PLAN_LABEL = PLAN_NAMES as Record<Plan, string>;
@@ -122,7 +123,7 @@ export default function AppHeader({ user, plan, credits, churchBilling, view, on
             key={v}
             type="button"
             onClick={() => onView(v)}
-            className={`flex-1 rounded-full py-1.5 text-sm font-semibold ${view === v ? 'bg-ink text-bg' : 'text-muted'}`}
+            className={`flex-1 whitespace-nowrap rounded-full px-1 py-1.5 text-xs font-semibold ${view === v ? 'bg-ink text-bg' : 'text-muted'}`}
           >
             {label}
           </button>

@@ -309,3 +309,25 @@ export const SERMON_OPTIONS = {
   returnVideo: false,
   custom: DEFAULT_CUSTOM,
 };
+
+// ─── Meetings ────────────────────────────────────────────────────
+
+/** Longest meeting recording each plan can transcribe, in minutes. */
+export const MEETING_MAX_MINUTES = { free: 60, payg: 180, pro: 240, audio_master: 480, church: 240 };
+/** Largest meeting file accepted (audio or video). */
+export const MEETING_MAX_BYTES = 3 * 1024 * 1024 * 1024;
+/** Meeting minutes (summary, decisions, action items), per started hour of recording. */
+export const MINUTES_CREDITS_PER_HOUR = 10;
+
+export function meetingMaxMinutes(plan) {
+  return MEETING_MAX_MINUTES[plan] ?? MEETING_MAX_MINUTES.free;
+}
+
+/**
+ * @param {number} durationSeconds
+ * @param {{ translate?: boolean, minutes?: boolean }} opts
+ */
+export function estimateMeetingCredits(durationSeconds, opts = {}) {
+  const hours = Math.max(1, Math.ceil((durationSeconds || 60) / 3600));
+  return estimateTranscriptCredits(durationSeconds, Boolean(opts.translate)) + (opts.minutes ? hours * MINUTES_CREDITS_PER_HOUR : 0);
+}

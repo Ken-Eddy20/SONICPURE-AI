@@ -18,7 +18,33 @@ function getClient() {
  */
 export async function startCleanvoiceJob(fileUrl, config) {
   console.log('Cleanvoice createEdit:', JSON.stringify(config));
-  return getClient().createEdit(fileUrl, config);
+  try {
+    return await getClient().createEdit(fileUrl, config);
+  } catch (err) {
+    if (err?.status === 402) {
+      console.error('CLEANVOICE ACCOUNT OUT OF CREDITS: top up at https://app.cleanvoice.ai to restore audio cleaning.');
+      const e = new Error('Audio cleaning is temporarily unavailable. Please try again later.');
+      e.code = 'CLEANVOICE_NO_CREDITS';
+      throw e;
+    }
+    if (err?.status === 401) {
+      console.error('CLEANVOICE API KEY REJECTED: check CLEANVOICE_API_KEY.');
+      const e = new Error('Audio cleaning is temporarily unavailable. Please try again later.');
+      e.code = 'CLEANVOICE_AUTH';
+      throw e;
+    }
+    throw err;
+  }
+}
+
+/** Remaining Cleanvoice credits on the account behind this server, or null if unknown. */
+export async function cleanvoiceCredits() {
+  try {
+    const info = await getClient().checkAuth();
+    return Number(info?.credit?.total ?? 0);
+  } catch {
+    return null;
+  }
 }
 
 const STAGE_LABELS = {
@@ -126,4 +152,44 @@ export function extractInsights(result) {
   }
 
   return { statistics, transcript, summary, social, isVideo: Boolean(result.video) };
+}
+
+/**
+ * Speaker-labelled paragraphs from a Cleanvoice transcription result.
+ * Words are matched to the detailed paragraphs (which carry the speaker) in one pass.
+ * @returns {{start:number,end:number,text:string,speaker?:string}[]}
+ */
+export function speakerSegments(result) {
+  const t = result?.transcription;
+  if (!t || Array.isArray(t)) return [];
+  const detailed = t.transcription;
+  const words = (detailed?.words || []).slice().sort((a, b) => a.start - b.start);
+  const paras = (detailed?.paragraphs || []).slice().sort((a, b) => a.start - b.start);
+
+  if (words.length && paras.length) {
+    const labels = new Map();
+    const out = [];
+    let w = 0;
+    for (let i = 0; i < paras.length; i++) {
+      const p = paras[i];
+      // A paragraph owns every word until the next paragraph starts (end times can overlap or drift).
+      const boundary = i + 1 < paras.length ? paras[i + 1].start : Infinity;
+      const parts = [];
+      // 20 ms tolerance absorbs rounding noise in timestamps at the boundary.
+      while (w < words.length && words[w].start < boundary - 0.02) {
+        parts.push(String(words[w].text || '').trim());
+        w++;
+      }
+      const text = parts.filter(Boolean).join(' ').replace(/\s+([,.!?;:])/g, '$1').trim();
+      if (!text) continue;
+      const raw = String(p.speaker ?? '');
+      if (!labels.has(raw)) labels.set(raw, `Speaker ${String.fromCharCode(65 + (labels.size % 26))}`);
+      out.push({ start: +Number(p.start).toFixed(2), end: +Number(p.end).toFixed(2), text, speaker: labels.get(raw) });
+    }
+    if (out.length) return out;
+  }
+
+  return (t.paragraphs || [])
+    .map((p) => ({ start: +Number(p.start || 0).toFixed(2), end: +Number(p.end || 0).toFixed(2), text: String(p.text || '').trim() }))
+    .filter((p) => p.text);
 }

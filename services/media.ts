@@ -127,3 +127,19 @@ function vttTime(seconds: number) {
 export function toVtt(segments: { start: number; end: number; text: string }[]) {
   return `WEBVTT\n\n${segments.map((s) => `${vttTime(s.start)} --> ${vttTime(s.end)}\n${s.text.trim()}\n`).join('\n')}`;
 }
+
+const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** Word opens HTML saved as .doc, which keeps headings, lists and tables without a docx library. */
+export function downloadWordDoc(filename: string, title: string, bodyHtml: string) {
+  const html = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.4}h1{font-size:18pt}h2{font-size:13pt;margin-top:18pt}td,th{border:1px solid #bbb;padding:4pt 6pt;vertical-align:top}table{border-collapse:collapse;width:100%}.t{color:#666;font-size:9pt}</style></head><body>${bodyHtml}</body></html>`;
+  const url = URL.createObjectURL(new Blob(['﻿', html], { type: 'application/msword' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename.endsWith('.doc') ? filename : `${filename}.doc`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export { escapeHtml };

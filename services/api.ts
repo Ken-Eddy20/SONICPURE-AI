@@ -298,3 +298,117 @@ export const createSermon = (fileId: string, fields: SermonFields) =>
 export const updateSermon = (id: string, body: Partial<SermonFields> & { status?: Sermon['status'] }) =>
   apiFetch<{ success: boolean }>(`/api/church/sermons/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
 export const deleteSermon = (id: string) => apiFetch<{ success: boolean }>(`/api/church/sermons/${id}`, { method: 'DELETE' });
+
+// ─── Meetings ────────────────────────────────────────────────────
+
+export interface MeetingSegment extends Segment {
+  speaker?: string;
+}
+
+export interface MeetingMinutes {
+  title: string;
+  summary: string;
+  keyPoints: string[];
+  decisions: string[];
+  actionItems: { task: string; owner: string; due: string }[];
+  topics: { start: number; title: string }[];
+  generatedAt?: string | null;
+}
+
+export interface Meeting {
+  id: string;
+  title: string;
+  date: string;
+  language: string;
+  translate: boolean;
+  wantMinutes: boolean;
+  engine: 'cleanvoice' | 'khaya';
+  status: 'uploading' | 'processing' | 'done' | 'failed';
+  stage: string | null;
+  percent: number | null;
+  fileName: string;
+  fileSize: number;
+  sourceType: 'audio' | 'video';
+  durationSeconds: number;
+  audioUrl: string | null;
+  speakerNames: Record<string, string>;
+  minutes: MeetingMinutes | null;
+  minutesError: string | null;
+  creditsUsed: number;
+  error: string | null;
+  createdAt: string | null;
+  completedAt: string | null;
+}
+
+export interface MeetingConfig {
+  englishSpeakers: boolean;
+  localLanguages: boolean;
+  minutes: boolean;
+  maxMinutes: number;
+  maxBytes: number;
+  chunkSize: number;
+}
+
+export const getMeetingConfig = () => apiFetch<MeetingConfig>('/api/meetings/config');
+export const listMeetings = () => apiFetch<{ meetings: Meeting[] }>('/api/meetings');
+export const getMeeting = (id: string) =>
+  apiFetch<{ meeting: Meeting; transcript: MeetingSegment[]; translation: MeetingSegment[] }>(`/api/meetings/${id}`);
+export const updateMeeting = (id: string, body: { title?: string; speakerNames?: Record<string, string> }) =>
+  apiFetch<{ success: boolean }>(`/api/meetings/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+export const regenerateMinutes = (id: string) =>
+  apiFetch<{ minutes: MeetingMinutes; creditsUsed: number }>(`/api/meetings/${id}/minutes`, { method: 'POST' });
+export const deleteMeeting = (id: string) => apiFetch<{ success: boolean }>(`/api/meetings/${id}`, { method: 'DELETE' });
+
+/**
+ * Create a meeting and upload its recording in pieces. A failed piece is retried
+ * (with backoff) without restarting the whole upload, which matters on mobile data.
+ */
+export async function uploadMeeting(
+  file: File,
+  details: { title: string; date: string; language: string; translate: boolean; minutes: boolean },
+  onProgress: (sentBytes: number, totalBytes: number) => void,
+  signal?: AbortSignal,
+): Promise<{ id: string }> {
+  const created = await apiFetch<{ id: string; chunkSize: number; totalChunks: number }>('/api/meetings', {
+    method: 'POST',
+    body: JSON.stringify({ ...details, fileName: file.name, fileSize: file.size, mimeType: file.type }),
+  });
+  const { id, chunkSize, totalChunks } = created;
+  let sent = 0;
+
+  const sendChunk = async (index: number) => {
+    const blob = file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize));
+    for (let attempt = 0; ; attempt++) {
+      if (signal?.aborted) throw new ApiError(0, { error: 'Upload cancelled.' });
+      try {
+        const bearer = await token();
+        const res = await fetch(`${API_BASE}/api/meetings/${id}/chunks/${index}`, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/octet-stream' },
+          body: blob,
+          signal,
+        });
+        if (res.ok) break;
+        const data = await res.json().catch(() => ({}));
+        if (res.status < 500 && res.status !== 429) throw new ApiError(res.status, data);
+        if (attempt >= 4) throw new ApiError(res.status, data);
+      } catch (err) {
+        if (err instanceof ApiError && err.status && err.status < 500 && err.status !== 429) throw err;
+        if (attempt >= 4) throw err instanceof ApiError ? err : new ApiError(0, { error: 'Upload interrupted. Check your connection and try again.' });
+      }
+      await new Promise((r) => setTimeout(r, 1500 * 2 ** attempt));
+    }
+    sent += blob.size;
+    onProgress(sent, file.size);
+  };
+
+  // Two pieces in flight keeps the connection busy without flooding weak networks.
+  let next = 0;
+  const worker = async () => {
+    while (next < totalChunks) await sendChunk(next++);
+  };
+  await Promise.all([worker(), worker()]);
+
+  await apiFetch(`/api/meetings/${id}/complete`, { method: 'POST' });
+  return { id };
+}

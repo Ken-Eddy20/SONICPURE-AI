@@ -136,6 +136,7 @@ async function seed() {
   console.log('  - sermons        (Church tab: sermons linked to audioFiles)');
   console.log('  - transcripts    (local-language transcripts and translations)');
   console.log('  - captionJobs    (burned-in video captions)');
+  console.log('  - meetings       (meeting transcripts and minutes; parts subcollection)');
 }
 
 seed().catch((err) => {

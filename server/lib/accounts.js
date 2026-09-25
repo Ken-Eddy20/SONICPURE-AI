@@ -105,3 +105,27 @@ export async function getAccessibleFile(fileId, userId) {
   }
   throw new HttpError(403, 'Not authorized');
 }
+
+/**
+ * Charge `cost` credits for a job doc that already exists, merging `fields` into it.
+ * `check(account)` can throw to reject (e.g. plan limits) before anything is charged.
+ */
+export async function chargeExisting(userId, cost, jobRef, fields, check) {
+  return adminDb.runTransaction(async (tx) => {
+    const account = await resolveAccount(userId, tx);
+    if (check) check(account);
+    if (account.credits < cost) {
+      throw new HttpError(402, `This needs ${cost} credits. You have ${account.credits}.`, {
+        creditsNeeded: cost,
+        creditsAvailable: account.credits,
+        upgrade: true,
+      });
+    }
+    tx.update(account.billingRef, {
+      credits: account.credits - cost,
+      creditsUsedThisMonth: FieldValue.increment(cost),
+    });
+    tx.update(jobRef, { ...fields, creditsUsed: cost, billedTo: billedTo(account), refunded: false });
+    return account;
+  });
+}

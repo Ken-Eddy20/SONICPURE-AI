@@ -114,3 +114,15 @@ export async function burnCaptions(dir, videoName, onTime) {
   );
   return path.join(dir, 'out.mp4');
 }
+
+/**
+ * Compact speech-only copy of a recording (mono 16 kHz, 32 kbps MP3): about 14 MB per hour,
+ * small enough to store and to send to speech models, even for multi-hour meetings.
+ */
+export async function extractSpeechAudio(inputPath, dir, onTime) {
+  await runFfmpeg(
+    ['-i', path.basename(inputPath), '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', 'speech.mp3'],
+    { cwd: dir, onTime },
+  );
+  return path.join(dir, 'speech.mp3');
+}

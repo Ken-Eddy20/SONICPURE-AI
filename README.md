@@ -17,6 +17,17 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 - **Plans:** Free (50 credits), Pay As You Go ($1 per 20 credits, any amount), Pro ($20, 600 credits), Audio Master ($60, 2,000 credits). Prices in USD, charged in GHS at the live rate via Paystack.
 - Credit cost shown before every job; failed jobs refund automatically.
 
+## Meetings
+
+- Upload meeting recordings (audio or video) up to 3 GB. The browser sends the file in 8 MB pieces with automatic retries; the server keeps only a compact speech MP3 (about 14 MB per hour), never the video.
+- Length limits per plan: Free 60 min, PAYG 3 h, Pro 4 h, Church 4 h, Audio Master 8 h (`MEETING_MAX_MINUTES` in `shared/processing.js`).
+- English meetings: Cleanvoice transcription with speaker labels (rename speakers in the app). If Cleanvoice is unavailable (e.g. out of credits), the server falls back to Khaya's African English model.
+- Local-language meetings: Khaya transcription in 5-minute pieces, optional English translation.
+- Minutes: Claude (`claude-opus-5`) writes a summary, key points, decisions, action items (owner, due) and topics as structured JSON from the English transcript. Needs `ANTHROPIC_API_KEY`. If the minutes step fails, only its credits are refunded and the transcript is still delivered.
+- Costs: 2 credits/min transcript, +1/min translation, 10 credits per started hour for minutes. Charged when processing starts (after the real length is measured), refunded on failure.
+- Exports: Word (.doc), TXT, SRT, VTT; minutes copy-ready for WhatsApp or email.
+- Stored in `meetings/{id}` with the transcript split across `meetings/{id}/parts` (keeps each document under Firestore's 1 MB limit). API-only access.
+
 ## Church package
 
 - **Church account:** one owner plus up to 5 team members joining with an invite code (WhatsApp share button). Credits come from a shared pool on the church.
@@ -43,6 +54,7 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 | `sermons` | server | Sermon details linked to an `audioFiles` doc, draft/published |
 | `transcripts` | server | Khaya transcripts and translations with timed segments |
 | `captionJobs` | server | Burned-in caption renders |
+| `meetings` (+ `parts`) | server | Meeting uploads, transcripts, translations, speaker names and minutes |
 | `transactions`, `usageLogs` | server | Payments and usage history |
 
 Seed or update a single plan without touching the others: `npx tsx scripts/seedFirestore.ts --only church`
