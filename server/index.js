@@ -1,8 +1,9 @@
 /**
- * Backend API - Proxies audio processing to Audo AI
- * Keeps the API key server-side only
+ * SonicPure API: uploads to Cloudinary, cleans audio with Cleanvoice,
+ * bills credits in Firestore and takes payments through Paystack (in GHS).
+ * All secrets stay server-side.
  */
-import dotenv from 'dotenv';
+import './env.js';
 import express from 'express';
 import multer from 'multer';
 import cors from 'cors';
@@ -13,21 +14,35 @@ import path from 'path';
 import util from 'util';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import admin, { adminAuth, adminDb } from '../lib/firebaseAdmin.js';
-import { uploadAudio, saveProcessedAudio, saveExtractedAudio, deleteAudio } from '../lib/cloudinary.js';
+import { FieldValue } from 'firebase-admin/firestore';
+import { adminAuth, adminDb } from '../lib/firebaseAdmin.js';
+import { uploadAudio, saveProcessedAudio, saveExtractedAudio, deleteAudio, transcodedUrl } from '../lib/cloudinary.js';
 import { extractAudioFromVideo } from '../lib/extractAudio.js';
 import { parseBuffer } from 'music-metadata';
-import { processAudioCleaning, getJobStatus, deleteCleanvoiceJob } from './lib/cleanvoice.js';
+import { startCleanvoiceJob, checkCleanvoiceJob, extractInsights } from './lib/cleanvoice.js';
+import {
+  PROFILES,
+  PLAN_CREDITS,
+  PAYG_CREDITS_PER_USD,
+  PAYG_MIN_CREDITS,
+  PAYG_MAX_CREDITS,
+  normalizeOptions,
+  planRestriction,
+  estimateCredits,
+  buildCleanvoiceConfig,
+} from '../shared/processing.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.join(__dirname, '.env') });
+
 function diskLog(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
-  fs.appendFileSync(path.join(__dirname, 'server.log'), line);
+  try {
+    fs.appendFileSync(path.join(__dirname, 'server.log'), line);
+  } catch {
+    // Read-only filesystems (some hosts) still get console output.
+  }
   console.log(msg);
 }
-
-diskLog('[Startup] Cleanvoice Key Loaded: ' + (process.env.CLEANVOICE_API_KEY ? `Present (...${process.env.CLEANVOICE_API_KEY.slice(-4)})` : 'MISSING'));
 
 function formatError(err) {
   if (!err) return 'Unknown error';
@@ -36,187 +51,182 @@ function formatError(err) {
   return util.inspect(err, { depth: 2, colors: false });
 }
 
+diskLog('[Startup] Cleanvoice key: ' + (process.env.CLEANVOICE_API_KEY ? `present (...${process.env.CLEANVOICE_API_KEY.slice(-4)})` : 'MISSING'));
+
 const VIDEO_EXTENSIONS = ['.mp4', '.mov', '.avi', '.mkv', '.webm'];
-const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.webm'];
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma', '.webm', '.opus', '.aiff'];
+// Extensions Cleanvoice accepts as audio. Anything else is transcoded to WAV by Cloudinary first.
+const CLEANVOICE_AUDIO_EXTENSIONS = ['.wav', '.mp3', '.ogg', '.flac', '.m4a', '.aiff', '.aac', '.opus'];
+const FINALIZE_STALE_MS = 5 * 60 * 1000;
+const ALLOWED_ORIGINS = (
+  process.env.ALLOWED_ORIGINS ||
+  'http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000'
+)
   .split(',')
-  .map(origin => origin.trim())
+  .map((origin) => origin.trim())
   .filter(Boolean);
 
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' },
-}));
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
-  },
-}));
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 300,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-const uploadLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many upload or processing attempts. Please wait and try again.' },
-});
-const paymentLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many payment attempts. Please wait and try again.' },
-});
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+  }),
+);
+
+const limiter = (limit, message) =>
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit,
+    standardHeaders: true,
+    legacyHeaders: false,
+    ...(message ? { message: { error: message } } : {}),
+  });
+// Status polling runs every few seconds per active job, so the general limit is generous.
+const apiLimiter = limiter(900);
+const uploadLimiter = limiter(40, 'Too many upload or processing attempts. Please wait and try again.');
+const paymentLimiter = limiter(30, 'Too many payment attempts. Please wait and try again.');
 app.use('/api', apiLimiter);
 app.use((req, res, next) => {
   if (req.path === '/api/paystack/webhook') return next();
   express.json()(req, res, next);
 });
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage, limits: { fileSize: 60 * 1024 * 1024 } }); // 60MB
-
-function getQuotaDayKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
-
-function httpError(status, message, extra = {}) {
-  const err = new Error(message);
-  err.status = status;
-  Object.assign(err, extra);
-  return err;
-}
-
-// ─── Exchange Rate Utils ──────────────────────────────────────────
-let cachedRate = {
-  rate: parseFloat(process.env.USD_GHS_CONVERSION_RATE || '12.1'),
-  lastFetched: 0
-};
-
-async function getLiveGhsRate() {
-  const ONE_HOUR = 60 * 60 * 1000;
-  if (Date.now() - cachedRate.lastFetched < ONE_HOUR) {
-    return cachedRate.rate;
-  }
-
-  try {
-    diskLog('[Currency] Fetching live USD/GHS rate...');
-    const response = await fetch('https://open.er-api.com/v6/latest/USD');
-    const data = await response.json();
-    
-    if (data.result === 'success' && data.rates && data.rates.GHS) {
-      cachedRate = {
-        rate: data.rates.GHS,
-        lastFetched: Date.now()
-      };
-      diskLog(`[Currency] Live rate updated: 1 USD = ${cachedRate.rate} GHS`);
-      return cachedRate.rate;
-    }
-  } catch (err) {
-    diskLog('[Currency Error] Failed to fetch live rate, using fallback: ' + err.message);
-  }
-  
-  return cachedRate.rate; // Returns cached version or fallback from env
-}
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 120 * 1024 * 1024 } });
 
 app.get('/', (req, res) => {
-  const acceptsHtml = req.headers.accept?.includes('text/html');
-  if (acceptsHtml) {
-    res.send(`<!DOCTYPE html><html><head><title>SonicPure API</title></head><body style="font-family:sans-serif;padding:2rem">
-      <h1>SonicPure API is running</h1>
-      <p>Use the main app at <a href="http://localhost:3000">http://localhost:3000</a></p>
-      <p><strong>Endpoints:</strong> POST /api/audio/process</p>
-    </body></html>`);
-  } else {
-    res.json({ status: 'ok', message: 'SonicPure API is running', endpoints: ['POST /api/audio/process'] });
+  res.json({ status: 'ok', message: 'SonicPure API is running' });
+});
+
+// ─── Helpers ─────────────────────────────────────────────────────
+
+class HttpError extends Error {
+  constructor(status, message, extra = {}) {
+    super(message);
+    this.status = status;
+    this.extra = extra;
   }
-});
-
-app.get('/api', (req, res) => {
-  res.json({ status: 'ok', message: 'SonicPure API', endpoints: { 'POST /api/audio/process': 'Process audio file using Quality Tiers' } });
-});
-
-// ─── Audio Upload (Cloudinary + Firestore) ───────────────────────
+}
 
 async function verifyAuth(req) {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
-    throw new Error('Missing or invalid Authorization header');
+    throw new HttpError(401, 'Missing or invalid Authorization header');
   }
-  const idToken = authHeader.split('Bearer ')[1];
-  return adminAuth.verifyIdToken(idToken);
+  try {
+    return await adminAuth.verifyIdToken(authHeader.split('Bearer ')[1]);
+  } catch {
+    throw new HttpError(401, 'Session expired. Please sign in again.');
+  }
 }
+
+function sendError(res, err, fallback) {
+  if (err instanceof HttpError) {
+    return res.status(err.status).json({ error: err.message, ...err.extra });
+  }
+  diskLog(`[Error] ${fallback}: ${formatError(err)}`);
+  return res.status(500).json({ error: formatError(err) || fallback });
+}
+
+/** UTC day key used for the daily enhancement counter, e.g. "2026-09-25". */
+function getQuotaDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function enhancesUsedToday(user) {
+  return user.dailyEnhancesDate === getQuotaDayKey() ? user.dailyEnhancesUsed || 0 : 0;
+}
+
+function toDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value.toDate === 'function') return value.toDate();
+  return new Date(value);
+}
+
+async function loadPlan(planName) {
+  const snap = await adminDb.collection('creditPlans').doc(planName).get();
+  return snap.exists ? snap.data() : { maxDailyEnhances: 2, maxAudioLengthMins: 20, extractAudioFromVideo: false };
+}
+
+async function getOwnedFile(fileId, userId) {
+  const ref = adminDb.collection('audioFiles').doc(fileId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpError(404, 'File not found');
+  const data = snap.data();
+  if (data.userId !== userId) throw new HttpError(403, 'Not authorized');
+  return { ref, data };
+}
+
+/** Public shape of an audioFiles doc. `full` adds transcript and AI notes. */
+function serializeFile(id, d, full = true) {
+  const base = {
+    fileId: id,
+    status: d.status === 'uploading' ? 'uploaded' : d.status === 'finalizing' ? 'processing' : d.status,
+    stage: d.stage || null,
+    percent: d.percent ?? null,
+    feature: d.feature || null,
+    options: d.options || null,
+    originalFileName: d.originalFileName,
+    sourceType: d.sourceType,
+    originalFileUrl: d.extractedAudioUrl || d.originalFileUrl,
+    processedFileUrl: d.processedFileUrl || null,
+    processedIsVideo: Boolean(d.processedIsVideo),
+    durationSeconds: d.durationSeconds || 0,
+    fileSizeMB: d.fileSizeMB || 0,
+    creditsUsed: d.creditsUsed || 0,
+    qualityLevel: d.qualityLevel || null,
+    statistics: d.statistics || null,
+    hasNotes: Boolean(d.transcript || d.summary),
+    error: d.error || null,
+    createdAt: toDate(d.createdAt)?.toISOString() || null,
+    expiresAt: toDate(d.expiresAt)?.toISOString() || null,
+  };
+  if (!full) return base;
+  return { ...base, transcript: d.transcript || null, summary: d.summary || null, social: d.social || null };
+}
+
+// ─── Upload ──────────────────────────────────────────────────────
 
 app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file provided' });
-    }
+    const { uid: userId } = await verifyAuth(req);
+    if (!req.file) throw new HttpError(400, 'No file provided');
 
-    const decoded = await verifyAuth(req);
-    const userId = decoded.uid;
-
-    // ── Fetch user & plan from Firestore ──
     const userSnap = await adminDb.collection('users').doc(userId).get();
-    if (!userSnap.exists) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!userSnap.exists) throw new HttpError(404, 'User not found');
     const userData = userSnap.data();
-    const planName = userData.plan || 'free';
+    const planName = (userData.plan || 'free').toLowerCase();
+    const planData = await loadPlan(planName);
 
-    const planSnap = await adminDb.collection('creditPlans').doc(planName).get();
-    if (!planSnap.exists) {
-      return res.status(500).json({ error: 'Plan configuration not found' });
-    }
-    const planData = planSnap.data();
-
-    // ── Determine file type by extension ──
+    // Mime type wins over extension: a browser recording is audio/webm, not a video.
     const ext = path.extname(req.file.originalname || '').toLowerCase();
-    let isVideo = VIDEO_EXTENSIONS.includes(ext);
-    let isAudio = AUDIO_EXTENSIONS.includes(ext) || req.file.mimetype?.startsWith('audio/');
-    
-    // Recordings from microphone might be saved as .mp4 or .webm by certain browsers (like Safari)
-    if (req.file.originalname?.startsWith('recording.')) {
-      isVideo = false;
-      isAudio = true;
-    } else if (ext === '.webm' && req.file.mimetype?.startsWith('audio/')) {
-      isVideo = false;
-    }
-
+    const mime = req.file.mimetype || '';
+    const isRecording = (req.file.originalname || '').startsWith('recording');
+    const isAudio =
+      isRecording || mime.startsWith('audio/') || (!mime.startsWith('video/') && AUDIO_EXTENSIONS.includes(ext) && ext !== '.webm');
+    const isVideo = !isAudio && (mime.startsWith('video/') || VIDEO_EXTENSIONS.includes(ext));
     if (!isVideo && !isAudio) {
-      return res.status(400).json({ error: 'Unsupported file type. Please upload an audio or video file.' });
+      throw new HttpError(400, 'Unsupported file type. Please upload an audio or video file.');
     }
-
-    // ── Video extraction gate ──
     if (isVideo && !planData.extractAudioFromVideo) {
-      return res.status(403).json({
-        error: 'Video uploads are not available on your plan. Upgrade to Pro or Unlimited.',
-      });
+      throw new HttpError(403, 'Video uploads are available on Pro and Audio Master.', { upgrade: true });
     }
 
+    // Fail fast before spending bandwidth on a job that will be rejected.
     const maxDaily = planData.maxDailyEnhances ?? -1;
-    const todayKey = getQuotaDayKey();
-    const dailyUsed = userData.dailyEnhancesDate === todayKey ? (userData.dailyEnhancesUsed || 0) : 0;
-    if (maxDaily !== -1 && dailyUsed >= maxDaily) {
-      return res.status(429).json({
-        error: `You have reached your daily upload limit (${maxDaily}/day). Upgrade your plan for more enhancements.`,
-      });
+    if (maxDaily !== -1 && enhancesUsedToday(userData) >= maxDaily) {
+      throw new HttpError(429, `You have used all ${maxDaily} enhancements for today. Upgrade for more.`, { upgrade: true });
     }
 
-    // ── Extract audio from video if needed ──
     let audioBuffer = req.file.buffer;
     let extractedAudioUrl = null;
     let extractedPublicId = null;
-    const sourceType = isVideo ? 'video' : 'audio';
-
     if (isVideo) {
       audioBuffer = await extractAudioFromVideo(req.file.buffer, req.file.originalname);
       const extracted = await saveExtractedAudio(audioBuffer, userId);
@@ -224,339 +234,338 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
       extractedPublicId = extracted.public_id;
     }
 
-    // ── Detect duration via music-metadata ──
     let durationSeconds = 0;
     try {
-      const mm = await parseBuffer(audioBuffer, { mimeType: isVideo ? 'audio/mpeg' : req.file.mimetype });
+      const mm = await parseBuffer(audioBuffer, { mimeType: isVideo ? 'audio/mpeg' : mime });
       durationSeconds = mm.format.duration ?? 0;
     } catch {
-      // If metadata parsing fails, fall back to client-provided value
-      durationSeconds = parseFloat(req.body.durationSeconds || '0');
+      durationSeconds = 0;
     }
+    if (!durationSeconds) durationSeconds = parseFloat(req.body.durationSeconds || '0') || 0;
 
-    // ── Audio length limit ──
     const maxMins = planData.maxAudioLengthMins ?? -1;
     if (maxMins !== -1 && durationSeconds / 60 > maxMins) {
-      return res.status(400).json({
-        error: `Your audio exceeds the maximum length for your plan (${maxMins} min). Upgrade for longer audio.`,
-      });
+      if (extractedPublicId) await deleteAudio(extractedPublicId).catch(() => {});
+      throw new HttpError(400, `This file is ${Math.ceil(durationSeconds / 60)} min. Your plan allows up to ${maxMins} min.`, { upgrade: true });
     }
 
-    // ── Upload original to Cloudinary ──
     const { secure_url, public_id } = await uploadAudio(req.file.buffer, userId);
 
-    // ── Create audioFiles document ──
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + 86400000);
-    const feature = req.body.feature || 'noise_removal';
-
     const docRef = await adminDb.collection('audioFiles').add({
       userId,
-      originalFileName: req.file.originalname || 'audio.wav',
+      originalFileName: req.file.originalname || 'audio',
       originalFileUrl: secure_url,
       originalPublicId: public_id,
+      originalExt: ext,
       processedFileUrl: null,
       processedPublicId: null,
       extractedAudioUrl,
       extractedPublicId,
-      sourceType,
-      feature,
+      sourceType: isVideo ? 'video' : 'audio',
+      feature: null,
       fileSizeMB: parseFloat((req.file.size / (1024 * 1024)).toFixed(2)),
       durationSeconds,
-      status: 'uploading',
+      status: 'uploaded',
       createdAt: now,
-      expiresAt,
+      expiresAt: new Date(now.getTime() + 86400000),
     });
 
     res.json({
       fileId: docRef.id,
-      originalFileUrl: secure_url,
-      extractedAudioUrl,
-      sourceType,
+      originalFileUrl: extractedAudioUrl || secure_url,
+      sourceType: isVideo ? 'video' : 'audio',
+      durationSeconds,
     });
   } catch (err) {
-    console.error('Audio upload error:', err);
-    if (err.message?.includes('Authorization')) {
-      return res.status(401).json({ error: err.message });
+    sendError(res, err, 'Upload failed');
+  }
+});
+
+// ─── Process (starts an async Cleanvoice job) ────────────────────
+
+app.post('/api/audio/process', uploadLimiter, async (req, res) => {
+  const { fileId, feature } = req.body || {};
+  let charged = false;
+  try {
+    const { uid: userId } = await verifyAuth(req);
+    if (!fileId || !PROFILES[feature]) throw new HttpError(400, 'fileId and a valid feature are required');
+    const options = normalizeOptions(req.body.options);
+
+    const { ref: fileRef } = await getOwnedFile(fileId, userId);
+    const userRef = adminDb.collection('users').doc(userId);
+
+    const job = await adminDb.runTransaction(async (tx) => {
+      const [userSnap, fileSnap] = await Promise.all([tx.get(userRef), tx.get(fileRef)]);
+      if (!userSnap.exists) throw new HttpError(404, 'User not found');
+      const file = fileSnap.data();
+      if (!['uploaded', 'uploading'].includes(file.status)) {
+        throw new HttpError(409, 'This file is already processing or finished.');
+      }
+
+      const user = userSnap.data();
+      const planName = (user.plan || 'free').toLowerCase();
+      const planSnap = await tx.get(adminDb.collection('creditPlans').doc(planName));
+      const planData = planSnap.exists ? planSnap.data() : { maxDailyEnhances: 2 };
+
+      if (file.sourceType !== 'video') options.returnVideo = false;
+      const restriction = planRestriction(feature, options, planName);
+      if (restriction) throw new HttpError(403, restriction, { upgrade: true });
+
+      const usedToday = enhancesUsedToday(user);
+      const maxDaily = planData.maxDailyEnhances ?? -1;
+      if (maxDaily !== -1 && usedToday >= maxDaily) {
+        throw new HttpError(429, `You have used all ${maxDaily} enhancements for today. Upgrade for more.`, { upgrade: true });
+      }
+
+      const cost = estimateCredits(feature, file.durationSeconds, options);
+      const balance = Number(user.credits || 0);
+      if (balance < cost) {
+        throw new HttpError(402, `This job needs ${cost} credits. You have ${balance}.`, {
+          creditsNeeded: cost,
+          creditsAvailable: balance,
+          upgrade: true,
+        });
+      }
+
+      const { config, qualityLevel } = buildCleanvoiceConfig(feature, options, planName);
+      const now = new Date();
+
+      tx.update(userRef, {
+        credits: balance - cost,
+        creditsUsedThisMonth: FieldValue.increment(cost),
+        dailyEnhancesDate: getQuotaDayKey(),
+        dailyEnhancesUsed: usedToday + 1,
+        dailyEnhancesResetAt: now,
+      });
+      tx.update(fileRef, {
+        status: 'processing',
+        feature,
+        options,
+        creditsUsed: cost,
+        qualityLevel,
+        stage: 'Queued',
+        percent: 2,
+        startedAt: now,
+        error: null,
+      });
+
+      let targetUrl = file.originalFileUrl;
+      if (file.sourceType === 'video' && !options.returnVideo) {
+        targetUrl = file.extractedAudioUrl;
+      } else if (
+        file.sourceType === 'audio' &&
+        !CLEANVOICE_AUDIO_EXTENSIONS.includes(file.originalExt || path.extname(new URL(file.originalFileUrl).pathname))
+      ) {
+        targetUrl = transcodedUrl(file.originalPublicId, 'wav');
+      }
+
+      return { cost, config, targetUrl: targetUrl.replace('http://', 'https://'), creditsRemaining: balance - cost };
+    });
+    charged = true;
+
+    const editId = await startCleanvoiceJob(job.targetUrl, job.config);
+    await fileRef.update({ editId });
+    diskLog(`[Process] Started Cleanvoice edit ${editId} for file ${fileId}`);
+
+    res.status(202).json({
+      fileId,
+      status: 'processing',
+      creditsUsed: job.cost,
+      creditsRemaining: job.creditsRemaining,
+    });
+  } catch (err) {
+    if (charged && fileId) {
+      diskLog(`[Process Error] [${fileId}] ${formatError(err)}`);
+      await failJob(adminDb.collection('audioFiles').doc(fileId), formatError(err)).catch((e) =>
+        diskLog(`[Refund Error] [${fileId}] ${formatError(e)}`),
+      );
+      return res.status(502).json({ error: 'Cleanvoice could not start this job. Your credits were refunded.', message: formatError(err) });
     }
-    res.status(500).json({ error: err.message || 'Upload failed' });
+    sendError(res, err, 'Processing failed');
+  }
+});
+
+/** Mark a job failed and give back its credits and daily slot. Idempotent. */
+async function failJob(fileRef, reason) {
+  let file = null;
+  await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(fileRef);
+    file = snap.data();
+    if (!file || file.status === 'failed' || file.status === 'processed') {
+      file = null;
+      return;
+    }
+    const userRef = adminDb.collection('users').doc(file.userId);
+    const userSnap = await tx.get(userRef);
+    const user = userSnap.data() || {};
+    const updates = {};
+    if (file.creditsUsed > 0) {
+      updates.credits = Number(user.credits || 0) + file.creditsUsed;
+      updates.creditsUsedThisMonth = Math.max(0, (user.creditsUsedThisMonth || 0) - file.creditsUsed);
+    }
+    if (enhancesUsedToday(user) > 0) updates.dailyEnhancesUsed = user.dailyEnhancesUsed - 1;
+    if (Object.keys(updates).length) tx.update(userRef, updates);
+    tx.update(fileRef, { status: 'failed', error: reason, creditsRefunded: file.creditsUsed || 0, creditsUsed: 0 });
+  });
+  if (file) {
+    diskLog(`[Job Failed] [${fileRef.id}] ${reason}`);
+    await adminDb.collection('usageLogs').add({
+      userId: file.userId,
+      feature: file.feature,
+      fileName: file.originalFileName,
+      fileDurationSeconds: file.durationSeconds || 0,
+      creditsUsed: 0,
+      status: 'failed',
+      createdAt: new Date(),
+    });
+  }
+}
+
+/** Copy a finished Cleanvoice result into Cloudinary + Firestore. Only one caller wins the claim. */
+async function finalizeJob(fileRef, result) {
+  const claimed = await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(fileRef);
+    const d = snap.data();
+    const stale = d.status === 'finalizing' && Date.now() - (toDate(d.finalizingAt)?.getTime() || 0) > FINALIZE_STALE_MS;
+    if (d.status !== 'processing' && !stale) return null;
+    tx.update(fileRef, { status: 'finalizing', finalizingAt: new Date(), stage: 'Saving your file', percent: 98 });
+    return d;
+  });
+  if (!claimed) return;
+
+  try {
+    const download = await fetch(result.download_url);
+    if (!download.ok) throw new Error(`Download from Cleanvoice failed (${download.status})`);
+    const buffer = Buffer.from(await download.arrayBuffer());
+    const saved = await saveProcessedAudio(buffer, claimed.userId);
+    const insights = extractInsights(result);
+
+    await fileRef.update({
+      status: 'processed',
+      stage: 'Done',
+      percent: 100,
+      processedFileUrl: saved.secure_url,
+      processedPublicId: saved.public_id,
+      processedIsVideo: insights.isVideo,
+      statistics: insights.statistics,
+      transcript: insights.transcript,
+      summary: insights.summary,
+      social: insights.social,
+      completedAt: new Date(),
+    });
+    await adminDb.collection('usageLogs').add({
+      userId: claimed.userId,
+      feature: claimed.feature,
+      fileName: claimed.originalFileName,
+      fileDurationSeconds: claimed.durationSeconds || 0,
+      creditsUsed: claimed.creditsUsed || 0,
+      qualityLevel: claimed.qualityLevel || null,
+      status: 'completed',
+      createdAt: new Date(),
+    });
+    diskLog(`[Job Done] [${fileRef.id}] saved to Cloudinary`);
+  } catch (err) {
+    // Release the claim so the next poll retries the copy.
+    await fileRef.update({ status: 'processing', stage: 'Retrying save', percent: 97 });
+    throw err;
+  }
+}
+
+// ─── Status (client polls this; it advances the job) ─────────────
+
+app.get('/api/audio/status/:fileId', async (req, res) => {
+  try {
+    const { uid } = await verifyAuth(req);
+    const { ref, data } = await getOwnedFile(req.params.fileId, uid);
+
+    if (data.status === 'processing' && data.editId) {
+      const check = await checkCleanvoiceJob(data.editId);
+      if (check.state === 'running') {
+        if (check.stage !== data.stage || check.percent !== data.percent) {
+          await ref.update({ stage: check.stage, percent: check.percent });
+        }
+      } else if (check.state === 'failed') {
+        await failJob(ref, check.message);
+      } else {
+        await finalizeJob(ref, check.result);
+      }
+    }
+
+    const fresh = await ref.get();
+    res.json(serializeFile(fresh.id, fresh.data()));
+  } catch (err) {
+    sendError(res, err, 'Status check failed');
+  }
+});
+
+// ─── History ─────────────────────────────────────────────────────
+
+app.get('/api/audio/history', async (req, res) => {
+  try {
+    const { uid } = await verifyAuth(req);
+    // Equality-only query: works without a composite index. Sorted in memory.
+    const snap = await adminDb.collection('audioFiles').where('userId', '==', uid).get();
+    const files = snap.docs
+      .map((doc) => serializeFile(doc.id, doc.data(), false))
+      .filter((f) => f.status !== 'uploaded')
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+      .slice(0, 30);
+    res.json({ files });
+  } catch (err) {
+    sendError(res, err, 'Could not load history');
   }
 });
 
 app.delete('/api/audio/:fileId', async (req, res) => {
   try {
-    const decoded = await verifyAuth(req);
-    const userId = decoded.uid;
-    const { fileId } = req.params;
-
-    const docRef = adminDb.collection('audioFiles').doc(fileId);
-    const docSnap = await docRef.get();
-
-    if (!docSnap.exists) {
-      return res.status(404).json({ error: 'File not found' });
+    const { uid } = await verifyAuth(req);
+    const { ref, data } = await getOwnedFile(req.params.fileId, uid);
+    if (data.status === 'processing' || data.status === 'finalizing') {
+      throw new HttpError(409, 'Wait for this file to finish processing before deleting it.');
     }
-
-    const data = docSnap.data();
-    if (data.userId !== userId) {
-      return res.status(403).json({ error: 'Not authorized' });
+    for (const id of [data.originalPublicId, data.processedPublicId, data.extractedPublicId]) {
+      if (id) await deleteAudio(id).catch((e) => diskLog(`[Cloudinary] delete failed ${id}: ${e.message}`));
     }
-
-    if (data.originalPublicId) await deleteAudio(data.originalPublicId);
-    if (data.processedPublicId) await deleteAudio(data.processedPublicId);
-    if (data.extractedPublicId) await deleteAudio(data.extractedPublicId);
-
-    await docRef.delete();
+    await ref.delete();
     res.json({ success: true });
   } catch (err) {
-    console.error('Audio delete error:', err);
-    if (err.message?.includes('Authorization')) {
-      return res.status(401).json({ error: err.message });
-    }
-    res.status(500).json({ error: err.message || 'Delete failed' });
+    sendError(res, err, 'Delete failed');
   }
 });
 
-// ─── Polling Route ───────────────────────────────────────────────
-app.get('/api/audio/status/:fileId', async (req, res) => {
+// ─── Exchange rate (USD prices, charged in GHS) ──────────────────
+
+let cachedRate = {
+  rate: parseFloat(process.env.USD_GHS_CONVERSION_RATE || '12.1'),
+  lastFetched: 0,
+};
+
+async function getLiveGhsRate() {
+  if (Date.now() - cachedRate.lastFetched < 60 * 60 * 1000) return cachedRate.rate;
   try {
-    const decoded = await verifyAuth(req);
-    const userId = decoded.uid;
-    const { fileId } = req.params;
-
-    const docRef = adminDb.collection('audioFiles').doc(fileId);
-    const docSnap = await docRef.get();
-
-    if (!docSnap.exists) {
-       return res.status(404).json({ error: 'File not found' });
+    const response = await fetch('https://open.er-api.com/v6/latest/USD');
+    const data = await response.json();
+    if (data.result === 'success' && data.rates?.GHS) {
+      cachedRate = { rate: data.rates.GHS, lastFetched: Date.now() };
+      diskLog(`[Currency] 1 USD = ${cachedRate.rate} GHS`);
     }
-
-    const data = docSnap.data();
-    if (data.userId !== userId) {
-       return res.status(403).json({ error: 'Not authorized' });
-    }
-
-    res.json({
-       fileId,
-       status: data.status,
-       processedFileUrl: data.processedFileUrl,
-       qualityLevel: data.qualityLevel,
-       creditsUsed: data.creditsUsed || 0,
-       creditsRemaining: data.creditsRemaining || -1,
-    });
   } catch (err) {
-    console.error('Status check error:', err);
-    if (err.message?.includes('Authorization')) {
-      return res.status(401).json({ error: err.message });
-    }
-    res.status(500).json({ error: err.message || 'Status check failed' });
+    diskLog('[Currency] Live rate fetch failed, using cached/fallback: ' + err.message);
   }
+  return cachedRate.rate;
+}
+
+/** Lets the UI show the approximate cedi amount before checkout. */
+app.get('/api/paystack/rate', async (req, res) => {
+  const currency = process.env.PAYSTACK_CURRENCY || 'GHS';
+  res.json({ currency, rate: currency === 'USD' ? 1 : await getLiveGhsRate() });
 });
 
-// ─── Processing Route ────────────────────────────────────────────
-app.post('/api/audio/process', uploadLimiter, async (req, res) => {
-  try {
-    const decoded = await verifyAuth(req);
-    const userId = decoded.uid;
-    const { fileId, feature } = req.body;
-    diskLog(`[API] Received process request for fileId: ${fileId}, userId: ${userId}`);
-
-    if (!fileId || !feature) {
-      return res.status(400).json({ error: 'fileId and feature are required' });
-    }
-
-    const docRef = adminDb.collection('audioFiles').doc(fileId);
-    const userRef = adminDb.collection('users').doc(userId);
-    const reservation = await adminDb.runTransaction(async (transaction) => {
-      const docSnap = await transaction.get(docRef);
-      if (!docSnap.exists) {
-        throw httpError(404, 'Audio file not found');
-      }
-
-      const audioData = docSnap.data();
-      if (audioData.userId !== userId) {
-        throw httpError(403, 'Not authorized');
-      }
-      if (audioData.status !== 'uploading') {
-        throw httpError(400, 'File is already processing or completed.');
-      }
-
-      const userSnap = await transaction.get(userRef);
-      if (!userSnap.exists) {
-        throw httpError(404, 'User not found');
-      }
-      const userData = userSnap.data();
-      const planName = (userData.plan || 'free').toLowerCase();
-      const isUnlimited = planName === 'audio_master';
-
-      const planRef = adminDb.collection('creditPlans').doc(planName);
-      const planSnap = await transaction.get(planRef);
-      const planData = planSnap.exists ? planSnap.data() : { maxDailyEnhances: 2 };
-
-      const durationSeconds = audioData.durationSeconds || 60;
-      const creditCostPerMinute = feature === 'audio_enhancement' ? 3 : 2;
-      const creditsNeeded = Math.ceil(durationSeconds / 60) * creditCostPerMinute;
-
-      if (!isUnlimited && (userData.credits || 0) < creditsNeeded) {
-        throw httpError(402, 'Insufficient credits', {
-          creditsNeeded,
-          creditsAvailable: userData.credits || 0,
-          upgrade: 'Top up or upgrade your plan.',
-        });
-      }
-
-      const todayKey = getQuotaDayKey();
-      const currentDailyUsed = userData.dailyEnhancesDate === todayKey ? (userData.dailyEnhancesUsed || 0) : 0;
-      const maxDaily = planData.maxDailyEnhances ?? -1;
-      if (maxDaily !== -1 && currentDailyUsed >= maxDaily) {
-        throw httpError(429, 'Daily limit reached', {
-          upgrade: 'Upgrade for more enhancements.',
-        });
-      }
-
-      const qualityLevel = (planName === 'free' || planName === 'payg') ? 80 : 100;
-      const creditsRemaining = isUnlimited ? -1 : Number(userData.credits || 0) - creditsNeeded;
-
-      transaction.update(docRef, {
-        status: 'processing',
-        qualityLevel,
-        creditsUsed: creditsNeeded,
-        creditsRemaining,
-      });
-
-      const userUpdate = {
-        dailyEnhancesDate: todayKey,
-        dailyEnhancesUsed: currentDailyUsed + 1,
-        dailyEnhancesResetAt: new Date(),
-      };
-      if (!isUnlimited) {
-        userUpdate.credits = creditsRemaining;
-        userUpdate.creditsUsedThisMonth = (userData.creditsUsedThisMonth || 0) + creditsNeeded;
-      }
-      transaction.update(userRef, userUpdate);
-
-      return {
-        audioData,
-        planName,
-        isUnlimited,
-        durationSeconds,
-        creditsNeeded,
-        creditsRemaining,
-        qualityLevel,
-      };
-    });
-
-    const {
-      audioData,
-      planName,
-      isUnlimited,
-      durationSeconds,
-      creditsNeeded,
-      creditsRemaining,
-      qualityLevel,
-    } = reservation;
-
-    // Fire & Forget Processing or Await here (We await due to Cloudinary save reqs inside Express)
-    const targetUrl = audioData.extractedAudioUrl || audioData.originalFileUrl;
-    
-    // Respond immediately to prevent browser network timeout handling large files
-    res.json({
-        success: true,
-        processing: true,
-        message: 'Processing started in the background.'
-    });
-
-    (async () => {
-      try {
-        diskLog(`[Background] Starting processing for fileId: ${fileId}, targetUrl: ${targetUrl}`);
-      // ── Verify URL Reachability ──
-      try {
-        const headResponse = await fetch(targetUrl.replace('http://', 'https://'), { method: 'HEAD' });
-        if (!headResponse.ok) {
-          throw new Error(`Audio file not reachable on Cloudinary (Status: ${headResponse.status}). Wait a few seconds or re-upload.`);
-        }
-        diskLog(`[Background] URL verified: ${targetUrl}`);
-      } catch (err) {
-        throw new Error(`Pre-processing reachability check failed: ${err.message}`);
-      }
-
-      // ── Start Cleanvoice Process ──
-      const { processedUrl } = await processAudioCleaning(targetUrl, feature, planName);
-        diskLog(`[Background] Cleanvoice success for fileId: ${fileId}, resultUrl: ${processedUrl}`);
-        
-        // Save output back to Cloudinary
-        const bufferRes = await fetch(processedUrl);
-        if (!bufferRes.ok) throw new Error("Failed fetching processed result from cleanvoice");
-        const buffer = await bufferRes.arrayBuffer();
-        
-        const { secure_url, public_id } = await saveProcessedAudio(Buffer.from(buffer), userId);
-
-        // Save success state
-        await docRef.update({
-            status: 'processed',
-            processedFileUrl: secure_url,
-            processedPublicId: public_id,
-            creditsRemaining,
-        });
-
-        diskLog(`[Background] Firestore update complete for fileId: ${fileId}`);
-
-        await adminDb.collection('usageLogs').add({
-            userId,
-            feature,
-            fileName: audioData.originalFileName,
-            fileDurationSeconds: durationSeconds,
-            creditsUsed: creditsNeeded,
-            qualityLevel,
-            status: 'completed',
-            createdAt: new Date()
-        });
-
-      } catch (backgroundErr) {
-        diskLog(`[Background Error] [fileId: ${fileId}] ` + formatError(backgroundErr));
-        console.error(`[fileId: ${fileId}] Background processing error:`, backgroundErr);
-        const errMsg = formatError(backgroundErr);
-        await docRef.update({ status: 'failed', error: errMsg });
-        const refundUpdate = {
-          dailyEnhancesUsed: admin.firestore.FieldValue.increment(-1),
-        };
-        if (!isUnlimited) {
-          refundUpdate.credits = admin.firestore.FieldValue.increment(creditsNeeded);
-          refundUpdate.creditsUsedThisMonth = admin.firestore.FieldValue.increment(-creditsNeeded);
-        }
-        await userRef.update(refundUpdate);
-      }
-    })();
-
-  } catch (err) {
-    console.error('Process handler error:', err);
-    if (!err.status && req.body.fileId) {
-       await adminDb.collection('audioFiles').doc(req.body.fileId).update({ status: 'failed' });
-    }
-    if (err.message?.includes('Authorization')) {
-      return res.status(401).json({ error: err.message });
-    }
-    if (err.status) {
-      return res.status(err.status).json({
-        error: err.message,
-        creditsNeeded: err.creditsNeeded,
-        creditsAvailable: err.creditsAvailable,
-        upgrade: err.upgrade,
-      });
-    }
-    res.status(500).json({ error: "Processing failed to start.", message: err.message });
-  }
-});
-
-
-// ─── Paystack Integration ─────────────────────────────────────────
+// ─── Paystack ────────────────────────────────────────────────────
 
 const PAYSTACK_BASE = 'https://api.paystack.co';
-
-const PLAN_CREDIT_MAP = {
-  payg:         { credits: 0, plan: 'payg' }, // Credits are now flexible and calculated dynamically
-  pro:          { credits: 600, plan: 'pro' },
-  audio_master: { credits: 2000, plan: 'audio_master' },
-};
+const PAID_TIERS = ['payg', 'pro', 'audio_master'];
 
 function getPaystackSecretKey() {
   const key = process.env.PAYSTACK_SECRET_KEY;
@@ -567,13 +576,9 @@ function getPaystackSecretKey() {
 }
 
 async function paystackRequest(endpoint, method = 'GET', body = null) {
-  const secret = getPaystackSecretKey();
   const options = {
     method,
-    headers: {
-      Authorization: `Bearer ${secret}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${getPaystackSecretKey()}`, 'Content-Type': 'application/json' },
   };
   if (body) options.body = JSON.stringify(body);
   const res = await fetch(`${PAYSTACK_BASE}${endpoint}`, options);
@@ -582,213 +587,173 @@ async function paystackRequest(endpoint, method = 'GET', body = null) {
 
 app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
   try {
-    const decoded = await verifyAuth(req);
-    const userId = decoded.uid;
-
+    const { uid: userId } = await verifyAuth(req);
     const { tier } = req.body;
-    if (!tier || !PLAN_CREDIT_MAP[tier]) {
-      return res.status(400).json({ error: 'Invalid tier' });
-    }
+    if (!PAID_TIERS.includes(tier)) throw new HttpError(400, 'Invalid tier');
 
     const userSnap = await adminDb.collection('users').doc(userId).get();
-    if (!userSnap.exists) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!userSnap.exists) throw new HttpError(404, 'User not found');
     const userData = userSnap.data();
 
     const planSnap = await adminDb.collection('creditPlans').doc(tier).get();
-    if (!planSnap.exists) {
-      return res.status(400).json({ error: 'Plan not found' });
-    }
+    if (!planSnap.exists) throw new HttpError(400, 'Plan not found');
     const planData = planSnap.data();
-    
-    let amountInCents = 0;
-    let creditsToAdd = 0;
 
+    let usdAmount;
+    let creditsToAdd;
     if (tier === 'payg') {
-      const customCredits = parseInt(req.body.customCredits || '0');
-      if (isNaN(customCredits) || customCredits < 20) {
-        return res.status(400).json({ error: 'Minimum 20 credits required for Pay As You Go.' });
+      const customCredits = parseInt(req.body.customCredits, 10);
+      if (!Number.isFinite(customCredits) || customCredits < PAYG_MIN_CREDITS || customCredits > PAYG_MAX_CREDITS) {
+        throw new HttpError(400, `Choose between ${PAYG_MIN_CREDITS} and ${PAYG_MAX_CREDITS} credits.`);
       }
       creditsToAdd = customCredits;
-      amountInCents = (customCredits / 20) * 100;
+      usdAmount = customCredits / PAYG_CREDITS_PER_USD;
     } else {
-      amountInCents = planData.price * 100;
-      creditsToAdd = PLAN_CREDIT_MAP[tier].credits;
+      creditsToAdd = PLAN_CREDITS[tier];
+      usdAmount = planData.price;
     }
 
-    const liveRate = await getLiveGhsRate();
-    const finalCurrency = process.env.PAYSTACK_CURRENCY || 'GHS';
-    const finalAmountInSubunits = Math.round(amountInCents * liveRate);
+    const currency = process.env.PAYSTACK_CURRENCY || 'GHS';
+    const rate = currency === 'USD' ? 1 : await getLiveGhsRate();
+    const amountInSubunits = Math.round(usdAmount * 100 * rate);
 
     const reference = `sp_${tier}_${userId.slice(0, 8)}_${Date.now()}`;
-
     const txPayload = {
       email: userData.email,
-      amount: finalAmountInSubunits,
-      currency: finalCurrency,
+      amount: amountInSubunits,
+      currency,
       reference,
       channels: ['card', 'bank', 'ussd', 'mobile_money', 'bank_transfer'],
       metadata: {
         userId,
         tier,
         creditsToAdd,
-        planToSet: PLAN_CREDIT_MAP[tier].plan,
+        usdAmount,
         custom_fields: [
           { display_name: 'Plan', variable_name: 'plan', value: planData.name },
+          { display_name: 'Credits', variable_name: 'credits', value: String(creditsToAdd) },
           { display_name: 'User', variable_name: 'user_email', value: userData.email },
         ],
       },
       callback_url: req.body.callbackUrl || undefined,
     };
-
-
+    if (process.env.PAYSTACK_SUBACCOUNT_CODE) txPayload.subaccount = process.env.PAYSTACK_SUBACCOUNT_CODE;
 
     const result = await paystackRequest('/transaction/initialize', 'POST', txPayload);
-
-    if (!result.status) {
-      return res.status(400).json({ error: result.message || 'Failed to initialize payment' });
-    }
+    if (!result.status) throw new HttpError(400, result.message || 'Failed to initialize payment');
 
     res.json({
       authorization_url: result.data.authorization_url,
       access_code: result.data.access_code,
       reference: result.data.reference,
+      amount: amountInSubunits / 100,
+      currency,
     });
   } catch (err) {
-    console.error('Paystack initialize error:', err);
-    if (err.message?.includes('Authorization')) {
-      return res.status(401).json({ error: err.message });
-    }
-    res.status(500).json({ error: err.message || 'Payment initialization failed' });
+    sendError(res, err, 'Payment initialization failed');
   }
 });
 
 app.get('/api/paystack/verify/:reference', paymentLimiter, async (req, res) => {
   try {
     const decoded = await verifyAuth(req);
-    const { reference } = req.params;
-
-    const result = await paystackRequest(`/transaction/verify/${reference}`);
-
+    const result = await paystackRequest(`/transaction/verify/${encodeURIComponent(req.params.reference)}`);
     if (!result.status || result.data.status !== 'success') {
-      return res.status(400).json({
-        error: 'Payment not successful',
-        paystackStatus: result.data?.status,
-      });
+      throw new HttpError(400, 'Payment not successful', { paystackStatus: result.data?.status });
     }
-
     const txData = result.data;
     const meta = txData.metadata || {};
-    const userId = meta.userId;
-    const tier = meta.tier;
+    if (meta.userId !== decoded.uid) throw new HttpError(403, 'Payment does not belong to this user');
 
-    if (userId !== decoded.uid) {
-      return res.status(403).json({ error: 'Payment does not belong to this user' });
-    }
-
-    await applySuccessfulPayment(userId, tier, txData);
-
-    res.json({ success: true, plan: tier, message: 'Payment verified and applied' });
+    const applied = await applyPaymentOnce(meta.userId, meta.tier, txData);
+    res.json({ success: true, plan: meta.tier, creditsAdded: applied.creditsAdded });
   } catch (err) {
-    console.error('Paystack verify error:', err);
-    if (err.message?.includes('Authorization')) {
-      return res.status(401).json({ error: err.message });
-    }
-    res.status(500).json({ error: err.message || 'Verification failed' });
+    sendError(res, err, 'Verification failed');
   }
 });
 
 app.post('/api/paystack/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
-    const secret = getPaystackSecretKey();
-    const sig = req.headers['x-paystack-signature'];
     const rawBody = typeof req.body === 'string' ? req.body : req.body.toString();
-    const hash = crypto.createHmac('sha512', secret).update(rawBody).digest('hex');
-
-    if (hash !== sig) {
-      console.warn('Paystack webhook: invalid signature');
+    const hash = crypto.createHmac('sha512', getPaystackSecretKey()).update(rawBody).digest('hex');
+    if (hash !== req.headers['x-paystack-signature']) {
+      diskLog('[Paystack] webhook with invalid signature');
       return res.status(400).json({ error: 'Invalid signature' });
     }
-
     const event = JSON.parse(rawBody);
-    console.log('Paystack webhook event:', event.event);
-
     if (event.event === 'charge.success') {
-      const txData = event.data;
-      const meta = txData.metadata || {};
-      const userId = meta.userId;
-      const tier = meta.tier;
-
-      if (userId && tier) {
-        const existingTx = await adminDb
-          .collection('transactions')
-          .where('paystackReference', '==', txData.reference)
-          .limit(1)
-          .get();
-
-        if (existingTx.empty) {
-          await applySuccessfulPayment(userId, tier, txData);
-          console.log(`Webhook: applied payment for user ${userId}, tier ${tier}`);
-        } else {
-          console.log(`Webhook: payment ${txData.reference} already processed`);
-        }
-      }
+      const meta = event.data.metadata || {};
+      if (meta.userId && meta.tier) await applyPaymentOnce(meta.userId, meta.tier, event.data);
     }
-
     res.sendStatus(200);
   } catch (err) {
-    console.error('Paystack webhook error:', err);
+    diskLog('[Paystack] webhook error: ' + formatError(err));
     res.sendStatus(200);
   }
 });
 
-async function applySuccessfulPayment(userId, tier, txData) {
-  const mapping = PLAN_CREDIT_MAP[tier];
-  if (!mapping) throw new Error(`Unknown tier: ${tier}`);
+/**
+ * Apply a successful payment exactly once. The transaction doc id is the Paystack
+ * reference, so the verify call and the webhook can't both add credits.
+ */
+async function applyPaymentOnce(userId, tier, txData) {
+  if (!PAID_TIERS.includes(tier)) throw new Error(`Unknown tier: ${tier}`);
+  const meta = txData.metadata || {};
+  const creditsAdded = tier === 'payg' ? Number(meta.creditsToAdd) || 0 : PLAN_CREDITS[tier];
 
+  const txRef = adminDb.collection('transactions').doc(String(txData.reference));
   const userRef = adminDb.collection('users').doc(userId);
-  const userSnap = await userRef.get();
-  const currentCredits = userSnap.exists ? (userSnap.data()?.credits ?? 0) : 0;
 
-  const isUnlimited = mapping.credits === -1;
-  const newCredits = isUnlimited ? -1 : currentCredits + mapping.credits;
+  await adminDb.runTransaction(async (tx) => {
+    const [existing, userSnap] = await Promise.all([tx.get(txRef), tx.get(userRef)]);
+    if (existing.exists) return;
 
-  const now = new Date();
-  const renewDate = new Date(now);
-  renewDate.setMonth(renewDate.getMonth() + 1);
+    const user = userSnap.exists ? userSnap.data() : {};
+    const currentCredits = Math.max(0, Number(user.credits ?? 0));
+    const currentPlan = user.plan || 'free';
+    const now = new Date();
 
-  await userRef.update({
-    plan: mapping.plan,
-    credits: newCredits,
-    creditsUsedThisMonth: 0,
-    billingRenewDate: renewDate,
-    paystackCustomerId: txData.customer?.customer_code || null,
+    const updates = {
+      credits: currentCredits + creditsAdded,
+      paystackCustomerId: txData.customer?.customer_code || user.paystackCustomerId || null,
+    };
+    if (tier === 'payg') {
+      // A top-up must not downgrade a Pro or Audio Master subscriber.
+      if (currentPlan === 'free') updates.plan = 'payg';
+    } else {
+      const renewDate = new Date(now);
+      renewDate.setMonth(renewDate.getMonth() + 1);
+      updates.plan = tier;
+      updates.creditsUsedThisMonth = 0;
+      updates.billingRenewDate = renewDate;
+    }
+    tx.update(userRef, updates);
+
+    tx.set(txRef, {
+      userId,
+      paystackReference: txData.reference,
+      amountPaid: txData.amount / 100,
+      currency: txData.currency || 'GHS',
+      usdAmount: meta.usdAmount ?? null,
+      creditsAdded,
+      plan: tier,
+      status: 'success',
+      paystackTransactionId: txData.id,
+      paystackChannel: txData.channel || null,
+      createdAt: now,
+    });
   });
-
-  await adminDb.collection('transactions').add({
-    userId,
-    paystackReference: txData.reference,
-    amountPaid: txData.amount / 100,
-    currency: txData.currency || 'USD',
-    creditsAdded: mapping.credits,
-    plan: tier,
-    status: 'success',
-    paystackTransactionId: txData.id,
-    paystackChannel: txData.channel || null,
-    createdAt: now,
-  });
+  diskLog(`[Paystack] applied ${tier} (+${creditsAdded} credits) for ${userId}, ref ${txData.reference}`);
+  return { creditsAdded };
 }
 
-// ─── Server start ─────────────────────────────────────────────────
+// ─── Server start ────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
-  console.log(`SonicPure API server on http://localhost:${PORT} (visit in browser to check)`);
-  if (!process.env.CLEANVOICE_API_KEY) {
-    console.warn('WARNING: CLEANVOICE_API_KEY not set in server/.env - audio processing will fail');
-  }
+  diskLog(`SonicPure API server on http://localhost:${PORT}`);
+  if (!process.env.CLEANVOICE_API_KEY) diskLog('WARNING: CLEANVOICE_API_KEY not set - audio processing will fail');
   if (!process.env.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY.includes('YOUR_SECRET_KEY')) {
-    console.warn('WARNING: PAYSTACK_SECRET_KEY not set - payments will not work');
+    diskLog('WARNING: PAYSTACK_SECRET_KEY not set - payments will not work');
   }
 });

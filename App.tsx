@@ -1,844 +1,149 @@
-
-import React, { useState, useRef, useCallback, useEffect, Suspense } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  Upload, 
-  Trash2, 
-  Wand2, 
-  Play, 
-  Pause, 
-  Download, 
-  Volume2, 
-  Mic, 
-  AlertCircle,
-  Settings2,
-  CheckCircle2,
-  Coins,
-  Activity,
-  Headphones, 
-  Video, 
-  Music, 
-  Mic2, 
-  Users, 
-  Quote, 
-  ArrowRight, 
-  ListMusic, 
-  Waves, 
-  Wind, 
-  Dog, 
-  Coffee, 
-  Droplets,
-  Sun,
-  Moon,
-  ChevronDown,
-  ChevronUp,
-  User as UserIcon,
-  LogOut,
-  Twitter,
-  Github,
-  Linkedin,
-  Mail
-} from 'lucide-react';
-import { AudioState, AudioMetadata } from './types';
-import { formatBytes, extractAudioFromVideo, getAudioDuration, convertBlobToMp3 } from './services/audioUtils';
-import { calculateCreditsForProcessing } from './services/creditsUtils';
-import AudioUploader from './components/AudioUploader';
-import { type SubscriptionTier } from './constants/subscriptionPlans';
+import { useEffect, useState } from 'react';
+import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
+import { doc, getDoc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
-import { signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import Landing from './components/landing/Landing';
+import Studio, { type UserSnapshot } from './components/studio/Studio';
+import AuthModal from './components/AuthModal';
+import SubscriptionModal from './components/SubscriptionModal';
+import PaymentPage from './components/PaymentPage';
+import { LogoMark } from './components/ui/Logo';
+import type { SubscriptionTier } from './constants/subscriptionPlans';
+import type { Plan } from './services/api';
+import { PLAN_IDS } from './shared/processing.js';
 
-const AuthModal = React.lazy(() => import('./components/AuthModal'));
-const SubscriptionModal = React.lazy(() => import('./components/SubscriptionModal'));
-const PaymentPage = React.lazy(() => import('./components/PaymentPage'));
+const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master'];
 
-const NOISE_TYPES = [
-  { name: 'Background Audio', icon: <Waves className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
-  { name: 'Breath & Mouth', icon: <Wind className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
-  { name: 'Restaurant Chatter', icon: <Coffee className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
-  { name: 'Dog Barking', icon: <Dog className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
-  { name: 'Water & Nature', icon: <Droplets className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
-  { name: 'Background Music', icon: <Music className="w-5 h-5" />, beforeUrl: 'https://res.cloudinary.com/demo/video/upload/dog.mp3', afterUrl: 'https://res.cloudinary.com/demo/video/upload/cat.mp3' },
-];
+interface Checkout {
+  tier: SubscriptionTier;
+  credits?: number;
+}
 
-const STEPS = [
-  { title: 'Upload', desc: 'Upload your audio or video files to SonicPure AI in your browser.', icon: <Upload className="w-6 h-6" /> },
-  { title: 'Analyze & Clean', desc: 'Select the enhanced content type and our AI will automatically analyze and clean it.', icon: <Wand2 className="w-6 h-6" /> },
-  { title: 'Download', desc: 'Download your pristine, noise-free audio files instantly.', icon: <Download className="w-6 h-6" /> },
-];
+/** Paystack's redirect flow returns with ?reference=... on the URL. */
+function readPaymentReturn(): (Checkout & { reference: string }) | null {
+  const params = new URLSearchParams(window.location.search);
+  const reference = params.get('reference') || params.get('trxref');
+  const tier = params.get('tier') as SubscriptionTier | null;
+  if (!reference || !tier || !TIERS.includes(tier)) return null;
+  const credits = parseInt(params.get('credits') || '', 10);
+  return { reference, tier, credits: Number.isFinite(credits) ? credits : undefined };
+}
 
-const CREATORS = [
-  'Music Producers', 'Podcasters', 'Online Educators', 'Social Media Creators', 'Interviewers', 'Vloggers'
-];
-
-const OTHER_TOOLS = [
-  'Audio Enhancer', 'Echo Remover', 'Reverb Remover', 'Vocal Remover', 'Drum Remover', 'Podcast Maker'
-];
-
-const TESTIMONIALS = [
-  { name: 'Sarah J.', role: 'YouTuber', text: 'This voice cleaner is my new BFF. It\'s like noise-canceling headphones for my vids!' },
-  { name: 'Mike T.', role: 'Podcaster', text: 'Saved me hours of manual editing. The interface is intuitive and processing is impressively quick.' },
-  { name: 'Clara C.', role: 'Vlogger', text: 'My vlog had a lot of café chatter, but this cleaned it up instantly. Crystal clear without losing my voice.' },
-  { name: 'David L.', role: 'Musician', text: 'I recorded a demo in my bedroom with the AC running. SonicPure took out the hum completely without touching my guitar tone. Incredible.' },
-  { name: 'Emma W.', role: 'Online Educator', text: 'My students used to complain about the background noise in my lectures. Since using this tool, my audio sounds like it was recorded in a professional studio.' },
-  { name: 'James K.', role: 'Filmmaker', text: 'Indie filmmaking means dealing with bad location sound. This tool has saved entire scenes that I thought were unusable due to traffic noise.' },
-];
-
-const FAQS = [
-  { question: 'How does the AI noise reduction work?', answer: 'Our advanced neural networks are trained on thousands of hours of audio to distinguish between human voices and background noise. It isolates the voice and suppresses everything else while preserving the natural tone.' },
-  { question: 'What file formats are supported?', answer: 'We support all major audio formats including MP3, WAV, M4A, AAC, and FLAC. Pro and Unlimited users can also upload video files (MP4, WEBM) to extract and clean the audio automatically.' },
-  { question: 'Is my audio data secure?', answer: 'Yes, your privacy is our priority. Files are processed securely and are automatically deleted from our servers shortly after processing is complete. We do not use your data to train our models.' },
-  { question: 'How long does processing take?', answer: 'Processing time depends on the length of your audio file. Typically, a 5-minute audio clip takes less than 30 seconds to process.' },
-  { question: 'Do credits expire?', answer: 'No, credits purchased on the Pay As You Go plan never expire. Monthly subscription credits reset at the beginning of each billing cycle.' },
-];
-
-const App: React.FC = () => {
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
+export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [credits, setCredits] = useState<number | null>(null);
-  const [userTier, setUserTier] = useState<string>('free');
-  const [isAuthReady, setIsAuthReady] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
-  const [showSubscriptionModal, setShowSubscriptionModal] = useState(false);
-  const [subscriptionTier, setSubscriptionTier] = useState<SubscriptionTier>('payg');
-  const [showPaymentPage, setShowPaymentPage] = useState(false);
-  const [customCredits, setCustomCredits] = useState<number | undefined>(undefined);
-  const [showProfileMenu, setShowProfileMenu] = useState(false);
-  const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [account, setAccount] = useState<UserSnapshot | null>(null);
 
-  const [playingAudio, setPlayingAudio] = useState<{ url: string; index: number; type: 'before' | 'after' } | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup' | null>(null);
+  const [upgradeTier, setUpgradeTier] = useState<SubscriptionTier | null>(null);
+  const [checkout, setCheckout] = useState<Checkout | null>(null);
+  const [paymentReturn] = useState(readPaymentReturn);
 
-  const toggleSamplePlayback = (url: string, index: number, type: 'before' | 'after') => {
-    if (playingAudio?.url === url) {
-       audioRef.current?.pause();
-       setPlayingAudio(null);
-    } else {
-       if (audioRef.current) {
-          audioRef.current.src = url;
-          audioRef.current.play();
-       }
-       setPlayingAudio({ url, index, type });
-    }
-  };
+  useEffect(
+    () =>
+      onAuthStateChanged(auth, (u) => {
+        setUser(u);
+        setAuthReady(true);
+      }),
+    [],
+  );
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (audio) {
-      audio.onended = () => setPlayingAudio(null);
-      audio.onpause = () => setPlayingAudio(null);
+    if (!user) {
+      setAccount(null);
+      return;
     }
-  }, []);
+    const ref = doc(db, 'users', user.uid);
 
-  // maxIntensity removed for Cleanvoice
+    // Starter profile. Field list must match the `create` rule in firestore.rules.
+    getDoc(ref)
+      .then((snap) => {
+        if (snap.exists()) return;
+        return setDoc(ref, {
+          email: user.email || '',
+          displayName: user.displayName || user.email?.split('@')[0] || 'Creator',
+          plan: 'free',
+          credits: 50,
+          creditsUsedThisMonth: 0,
+          dailyEnhancesUsed: 0,
+          dailyEnhancesDate: '',
+          dailyEnhancesResetAt: serverTimestamp(),
+          createdAt: serverTimestamp(),
+          billingRenewDate: serverTimestamp(),
+          paystackCustomerId: null,
+          isActive: true,
+        });
+      })
+      .catch((err) => console.error('Could not create user profile:', err));
 
-  const openSubscriptionModal = (tier: SubscriptionTier) => {
-    setSubscriptionTier(tier);
-    setShowSubscriptionModal(true);
-  };
+    return onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) return;
+        const d = snap.data();
+        const plan = PLAN_IDS.includes(d.plan) ? (d.plan as Plan) : 'free';
+        setAccount({
+          plan,
+          credits: typeof d.credits === 'number' ? d.credits : 0,
+          creditsUsedThisMonth: d.creditsUsedThisMonth || 0,
+          dailyEnhancesUsed: d.dailyEnhancesUsed || 0,
+          dailyEnhancesDate: d.dailyEnhancesDate || '',
+        });
+      },
+      (err) => console.error('Firestore error:', err),
+    );
+  }, [user]);
 
-  const profileMenuRef = useRef<HTMLDivElement>(null);
+  // Resume a redirect-based Paystack payment once auth is known.
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
-        setShowProfileMenu(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+    if (paymentReturn && user) setCheckout({ tier: paymentReturn.tier, credits: paymentReturn.credits });
+  }, [paymentReturn, user]);
 
-  const handleCheckout = (tier: SubscriptionTier, credits?: number) => {
-    setSubscriptionTier(tier);
-    setCustomCredits(credits);
-    setShowPaymentPage(true);
-  };
-
-  React.useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setIsAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  React.useEffect(() => {
-    if (isAuthReady && user) {
-      const userRef = doc(db, 'users', user.uid);
-      
-      const checkAndCreateUser = async () => {
-        try {
-          const docSnap = await getDoc(userRef);
-          if (!docSnap.exists()) {
-            let displayName = user.displayName;
-            if (!displayName && user.email) {
-              displayName = user.email.split('@')[0];
-            }
-
-            await setDoc(userRef, {
-              email: user.email || '',
-              displayName: displayName || 'Anonymous User',
-              plan: 'free',
-              credits: 50,
-              creditsUsedThisMonth: 0,
-              dailyEnhancesUsed: 0,
-              dailyEnhancesDate: '',
-              dailyEnhancesResetAt: serverTimestamp(),
-              createdAt: serverTimestamp(),
-              billingRenewDate: serverTimestamp(),
-              paystackCustomerId: null,
-              isActive: true,
-            });
-          }
-        } catch (err) {
-          console.error("Error creating user document:", err);
-        }
-      };
-      
-      checkAndCreateUser();
-
-      const unsubscribe = onSnapshot(userRef, (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          setCredits(data.credits ?? 0);
-          setUserTier(data.plan || 'free');
-        }
-      }, (err) => {
-        console.error("Firestore Error: ", err);
-      });
-
-      return () => unsubscribe();
-    } else {
-      setCredits(null);
-      setUserTier('free');
-    }
-  }, [user, isAuthReady]);
-
-  const handleSignIn = () => {
-    setAuthMode('signin');
-    setShowAuthModal(true);
-  };
-
-  const handleSignUp = () => {
-    setAuthMode('signup');
-    setShowAuthModal(true);
-  };
-
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-    } catch (err) {
-      console.error("Sign out error:", err);
-    }
-  };
-
-  React.useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  }, [isDarkMode]);
-
-  const toggleTheme = () => setIsDarkMode(!isDarkMode);
-
-  // Logic handled by AudioUploader
-
-  if (showPaymentPage) {
+  if (!authReady) {
     return (
-      <Suspense fallback={<div className="min-h-screen bg-gray-50 dark:bg-[#0a0a0a]" />}>
-        <PaymentPage
-          tier={subscriptionTier}
-          customCredits={customCredits}
-          onBack={() => setShowPaymentPage(false)}
-          userEmail={user?.email ?? undefined}
-          onPaymentSuccess={() => setShowPaymentPage(false)}
-        />
-      </Suspense>
+      <div className="grid min-h-screen place-items-center">
+        <LogoMark className="h-10 w-10 animate-pulse" />
+      </div>
+    );
+  }
+
+  if (checkout && user) {
+    return (
+      <PaymentPage
+        tier={checkout.tier}
+        customCredits={checkout.credits}
+        userEmail={user.email}
+        resumeReference={paymentReturn?.tier === checkout.tier ? paymentReturn.reference : null}
+        onBack={() => {
+          setCheckout(null);
+          if (paymentReturn) window.history.replaceState(null, '', window.location.pathname);
+        }}
+      />
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#f8f9fb] dark:bg-[#0a0a0a] text-gray-900 dark:text-white selection:bg-indigo-500/30 relative overflow-hidden transition-colors duration-300">
-      {/* Subtle grid — dark mode only */}
-      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden hidden dark:block opacity-[0.03]">
-        <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-              <path d="M 40 0 L 0 0 0 40" fill="none" stroke="currentColor" strokeWidth="1"/>
-            </pattern>
-          </defs>
-          <rect width="100%" height="100%" fill="url(#grid)" className="text-white" />
-        </svg>
-      </div>
-
-      {/* Header */}
-      <nav className="sticky top-0 z-50 border-b border-slate-200/80 dark:border-white/5 bg-white/90 dark:bg-[#0a0a0a]/80 backdrop-blur-xl transition-colors duration-300 shadow-sm shadow-slate-200/40 dark:shadow-none">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <motion.div 
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="flex items-center gap-3"
-          >
-            <img src="/logo.png" alt="" className="h-12 w-12 object-contain" />
-            <span className="font-bold text-xl tracking-tight text-gray-900 dark:text-white">SonicPure <span className="text-indigo-600 dark:text-indigo-400">AI</span></span>
-          </motion.div>
-          <motion.div 
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="flex items-center gap-4 text-sm text-gray-700 dark:text-white/60"
-          >
-            <button 
-              onClick={toggleTheme}
-              className="p-2.5 rounded-full bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 transition-colors text-slate-700 dark:text-white/70"
-              aria-label="Toggle theme"
-            >
-              {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-            </button>
-            {user ? (
-              <div className="flex items-center gap-4">
-                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20 rounded-full">
-                  <Coins className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                  <span className="text-indigo-700 dark:text-indigo-300 font-bold">{credits !== null ? credits : '...'} <span className="font-medium text-xs">credits</span></span>
-                </div>
-                <div className="relative" ref={profileMenuRef}>
-                  <button
-                    onClick={() => setShowProfileMenu(!showProfileMenu)}
-                    className="flex items-center gap-2 p-1.5 rounded-full hover:bg-gray-100 dark:hover:bg-white/10 transition-colors"
-                  >
-                    <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.email}&background=random`} alt="Avatar" className="w-8 h-8 rounded-full border border-gray-200 dark:border-white/10" referrerPolicy="no-referrer" />
-                    <ChevronDown className={`w-4 h-4 text-gray-500 dark:text-gray-400 transition-transform ${showProfileMenu ? 'rotate-180' : ''}`} />
-                  </button>
-                  <AnimatePresence>
-                    {showProfileMenu && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -8, scale: 0.96 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: -8, scale: 0.96 }}
-                        className="absolute right-0 mt-2 w-56 py-2 rounded-2xl bg-white dark:bg-[#151619] border border-gray-200 dark:border-white/10 shadow-xl z-50 overflow-hidden"
-                      >
-                        <div className="px-4 py-3 border-b border-gray-200 dark:border-white/10">
-                          <p className="font-medium text-gray-900 dark:text-white truncate">{user.displayName || user.email?.split('@')[0] || 'User'}</p>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user.email}</p>
-                        </div>
-                        <button
-                          onClick={() => { setShowProfileMenu(false); openSubscriptionModal('payg'); }}
-                          className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 text-sm"
-                        >
-                          <Coins className="w-4 h-4 text-indigo-500" />
-                          Upgrade / Buy Credits
-                        </button>
-                        <button
-                          onClick={() => { setShowProfileMenu(false); /* Could add account/settings page */ }}
-                          className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 text-gray-700 dark:text-gray-300 text-sm"
-                        >
-                          <UserIcon className="w-4 h-4" />
-                          Account
-                        </button>
-                        <button
-                          onClick={() => { setShowProfileMenu(false); handleSignOut(); }}
-                          className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-red-50 dark:hover:bg-red-500/10 text-red-600 dark:text-red-400 text-sm"
-                        >
-                          <LogOut className="w-4 h-4" />
-                          Sign Out
-                        </button>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
-              </div>
-            ) : (
-              <>
-                <button onClick={handleSignIn} className="hidden sm:block hover:text-gray-900 dark:hover:text-white transition-colors font-medium">
-                  Sign In
-                </button>
-                <button onClick={handleSignUp} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full transition-all font-medium shadow-lg shadow-indigo-500/20">
-                  Create Account
-                </button>
-              </>
-            )}
-          </motion.div>
+    <>
+      {user && account ? (
+        <Studio user={user} account={account} onChoosePlan={setUpgradeTier} onSignOut={() => signOut(auth)} />
+      ) : user ? (
+        <div className="grid min-h-screen place-items-center">
+          <LogoMark className="h-10 w-10 animate-pulse" />
         </div>
-      </nav>
-
-      <Suspense fallback={null}>
-        <AuthModal 
-          isOpen={showAuthModal} 
-          onClose={() => setShowAuthModal(false)} 
-          initialMode={authMode} 
-        />
-
-        <SubscriptionModal 
-          isOpen={showSubscriptionModal} 
-          onClose={() => setShowSubscriptionModal(false)} 
-          tier={subscriptionTier}
-          isAuthenticated={!!user}
-          onSignIn={() => { setAuthMode('signin'); setShowAuthModal(true); }}
-          onCheckout={handleCheckout}
-        />
-      </Suspense>
-
-      <main className="max-w-7xl mx-auto px-6 py-16 relative z-10">
-        {/* Dark-mode only soft glow */}
-        <div className="absolute inset-0 -z-10 pointer-events-none hidden dark:block">
-          <div className="absolute left-0 right-0 top-0 m-auto h-[310px] w-[310px] rounded-full bg-indigo-500 opacity-20 blur-[100px]" />
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
-          {/* Left Column: Hero & Action Panel */}
-          <div className={`relative ${user ? "lg:col-span-8 space-y-12" : "lg:col-span-12 max-w-4xl mx-auto space-y-12"}`}>
-            {/* Perspective grid — light mode hero background */}
-            <div className="absolute inset-x-0 top-0 -bottom-8 -z-10 pointer-events-none overflow-hidden dark:hidden">
-              <img
-                src="/hero-grid-light.png"
-                alt=""
-                aria-hidden="true"
-                className="absolute bottom-0 left-1/2 -translate-x-1/2 w-[120%] max-w-none h-[70%] min-h-[420px] object-cover object-bottom"
-              />
-              <div className="absolute inset-0 bg-gradient-to-b from-[#f8f9fb] via-[#f8f9fb]/40 to-transparent" />
-            </div>
-
-            <motion.div 
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, ease: "easeOut" }}
-              className={user ? "text-left" : "text-center flex flex-col items-center"}
-            >
-              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white dark:bg-white/5 border border-indigo-200 dark:border-white/10 text-indigo-700 dark:text-gray-300 text-xs font-semibold uppercase tracking-widest mb-8 shadow-sm shadow-indigo-100">
-                <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
-                <span>Professional Audio Processing</span>
-              </div>
-              <h1 className="text-5xl sm:text-7xl font-bold mb-6 tracking-tight leading-[1.1] text-slate-900 dark:text-white">
-                Crystal clear audio.<br />
-                <span className="text-indigo-600 dark:text-gray-500">Zero background noise.</span>
-              </h1>
-              <p className={`text-lg sm:text-xl text-slate-700 dark:text-gray-400 max-w-2xl leading-relaxed mb-10 ${!user ? 'mx-auto' : ''}`}>
-                Transform your recordings with studio-grade cleanup. SonicPure isolates your voice, eliminates environmental noise, and preserves the natural warmth of your audio in seconds.
-              </p>
-              
-              <div className={`flex flex-wrap items-center gap-4 text-sm text-slate-700 dark:text-gray-400 font-medium ${!user ? 'justify-center' : ''}`}>
-                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-indigo-200 dark:border-white/10 shadow-sm shadow-indigo-100/80">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" /> No credit card required
-                </div>
-                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-indigo-200 dark:border-white/10 shadow-sm shadow-indigo-100/80">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Free 50 credits
-                </div>
-                <div className="flex items-center gap-1.5 bg-white dark:bg-white/5 px-3 py-1.5 rounded-full border border-indigo-200 dark:border-white/10 shadow-sm shadow-indigo-100/80">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" /> Secure processing
-                </div>
-              </div>
-            </motion.div>
-
-            {/* Action Panel */}
-            <motion.div 
-              initial={{ opacity: 0, y: 40 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.2, ease: "easeOut" }}
-              className="bg-white dark:bg-white/[0.02] backdrop-blur-xl rounded-[2.5rem] p-8 sm:p-12 border border-indigo-200/80 dark:border-white/10 shadow-xl shadow-indigo-200/40 dark:shadow-2xl dark:shadow-black/50"
-            >
-              <AudioUploader />
-            </motion.div>
-      </div>
-
-      {/* Right Column: Features/Tools Panel */}
-      {user && (
-        <motion.div 
-          initial={{ opacity: 0, x: 40 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.6, delay: 0.4, ease: "easeOut" }}
-          className="lg:col-span-4 space-y-6"
-        >
-          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-indigo-200/80 dark:border-white/5 hover:border-indigo-400 dark:hover:border-indigo-500/30 transition-colors group shadow-md shadow-indigo-100/50 dark:shadow-none">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-100 dark:bg-indigo-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-              <Activity className="w-6 h-6 text-indigo-700 dark:text-indigo-400" />
-            </div>
-            <h4 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">Neural Extraction</h4>
-            <p className="text-slate-600 dark:text-white/50 leading-relaxed text-sm">
-              Advanced AI models differentiate between foreground vocal signals and complex background environmental noise with surgical precision.
-            </p>
-          </div>
-          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-violet-200/80 dark:border-white/5 hover:border-violet-400 dark:hover:border-purple-500/30 transition-colors group shadow-md shadow-violet-100/50 dark:shadow-none">
-            <div className="w-12 h-12 rounded-2xl bg-violet-100 dark:bg-purple-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-              <Volume2 className="w-6 h-6 text-violet-700 dark:text-purple-400" />
-            </div>
-            <h4 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">Tone Preservation</h4>
-            <p className="text-slate-600 dark:text-white/50 leading-relaxed text-sm">
-              Designed specifically to avoid the "robotic" phase artifacts and underwater sounds common in legacy spectral subtractive algorithms.
-            </p>
-          </div>
-          <div className="p-8 rounded-3xl bg-white dark:bg-white/[0.04] border border-fuchsia-200/80 dark:border-white/5 hover:border-fuchsia-400 dark:hover:border-pink-500/30 transition-colors group shadow-md shadow-fuchsia-100/50 dark:shadow-none">
-            <div className="w-12 h-12 rounded-2xl bg-fuchsia-100 dark:bg-pink-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-              <Settings2 className="w-6 h-6 text-fuchsia-700 dark:text-pink-400" />
-            </div>
-            <h4 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">Dynamic Intensity</h4>
-            <p className="text-slate-600 dark:text-white/50 leading-relaxed text-sm">
-              Full control over the processing depth. Choose between light cleanup for ambient feels or heavy isolation for podcast-style clarity.
-            </p>
-          </div>
-        </motion.div>
+      ) : (
+        <Landing onSignIn={() => setAuthMode('signin')} onSignUp={() => setAuthMode('signup')} onChoosePlan={setUpgradeTier} />
       )}
-    </div>
 
-    {/* Pricing Section */}
-    <motion.section 
-      initial={{ opacity: 0, y: 40 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true }}
-      className="mt-32 mb-16"
-    >
-      <div className="text-center mb-16">
-        <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">Simple, Transparent Pricing</h2>
-        <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Start for free, upgrade when you need more power. All plans use our credit-based system.</p>
-      </div>
-      
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        {/* Free Plan */}
-        <div className="p-8 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 flex flex-col shadow-md shadow-slate-200/60 dark:shadow-none">
-          <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Free</h3>
-          <p className="text-slate-600 dark:text-white/50 mb-6">Perfect for trying out the service.</p>
-          <div className="mb-8">
-            <span className="text-5xl font-extrabold text-slate-900 dark:text-white">$0</span>
-            <span className="text-slate-500 dark:text-white/50">/month</span>
-          </div>
-          <ul className="space-y-4 mb-8 flex-1 text-slate-700 dark:text-inherit">
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 50 credits / month</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 2 audio enhance options / day</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 20 mins max audio length</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Standard processing speed</li>
-          </ul>
-          <button className="w-full py-4 rounded-2xl bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-900 dark:text-white font-semibold transition-colors border border-slate-200 dark:border-white/10">
-            Current Plan
-          </button>
-        </div>
+      <AuthModal isOpen={authMode !== null} initialMode={authMode || 'signin'} onClose={() => setAuthMode(null)} />
 
-        {/* Pay As You Go */}
-        <div className="p-8 rounded-[2.5rem] bg-indigo-100 dark:bg-indigo-500/10 border border-indigo-300 dark:border-indigo-500/20 flex flex-col relative shadow-lg shadow-indigo-200/70 dark:shadow-none">
-          <div className="absolute -top-4 left-1/2 -translate-x-1/2 px-4 py-1 bg-indigo-600 text-white text-xs font-bold uppercase tracking-wider rounded-full">
-            Most Popular
-          </div>
-          <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Pay As You Go</h3>
-          <p className="text-indigo-800 dark:text-indigo-200/60 mb-6">Buy exactly what you need.</p>
-          <div className="mb-8">
-            <span className="text-5xl font-extrabold tracking-tight text-slate-900 dark:text-white">Flexible</span>
-            <div className="text-sm font-medium text-indigo-700 dark:text-indigo-400/60 mt-1">$1 per 20 credits</div>
-          </div>
-          <ul className="space-y-4 mb-8 flex-1 text-slate-700 dark:text-inherit">
-            <li className="flex items-center gap-3 text-sm font-bold text-indigo-800 dark:text-indigo-300"><CheckCircle2 className="w-5 h-5 shrink-0" /> Custom credit amount</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 4 highlights enhancements per day</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 30 mins max audio length</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> High priority processing</li>
-          </ul>
-          <button 
-            onClick={() => openSubscriptionModal('payg')}
-            className="w-full py-4 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition-colors shadow-lg shadow-indigo-500/20"
-          >
-            Buy Credits
-          </button>
-        </div>
-
-        {/* Pro Plan */}
-        <div className="p-8 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 flex flex-col shadow-md shadow-slate-200/60 dark:shadow-none">
-          <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Pro</h3>
-          <p className="text-slate-600 dark:text-white/50 mb-6">For professional workflows.</p>
-          <div className="mb-8">
-            <span className="text-5xl font-extrabold text-slate-900 dark:text-white">$20</span>
-            <span className="text-slate-500 dark:text-white/50">/month</span>
-          </div>
-          <ul className="space-y-4 mb-8 flex-1 text-slate-700 dark:text-inherit">
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 600 credits / month</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Extract audio from video</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> 50 mins max audio length</li>
-            <li className="flex items-center gap-3 text-sm"><CheckCircle2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" /> Advanced noise profiles</li>
-          </ul>
-          <button 
-            onClick={() => openSubscriptionModal('pro')}
-            className="w-full py-4 rounded-2xl bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-900 dark:text-white font-semibold transition-colors border border-slate-200 dark:border-white/10"
-          >
-            Subscribe Now
-          </button>
-        </div>
-        
-        {/* Audio Master Plan */}
-        <div className="md:col-span-3 p-8 rounded-[2.5rem] bg-indigo-100 dark:bg-indigo-500/10 border border-indigo-300 dark:border-indigo-500/20 flex flex-col md:flex-row items-center justify-between gap-8 shadow-lg shadow-indigo-200/70 dark:shadow-none">
-          <div>
-            <h3 className="text-2xl font-bold mb-2 text-slate-900 dark:text-white">Audio Master Studio</h3>
-            <p className="text-slate-600 dark:text-white/50 mb-4 max-w-xl">The ultimate package for studios and heavy users. Get 2000 credits, higher tier audio enhancement, and multiple upload options.</p>
-            <ul className="flex flex-wrap gap-6 text-slate-700 dark:text-inherit">
-              <li className="flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> 2000 Credits / Month</li>
-              <li className="flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Multiple Uploads</li>
-              <li className="flex items-center gap-2 text-sm"><CheckCircle2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" /> Highest Tier Enhancement</li>
-            </ul>
-          </div>
-          <div className="flex flex-col items-center shrink-0">
-            <div className="mb-4 text-center">
-              <span className="text-5xl font-extrabold text-slate-900 dark:text-white">$60</span>
-              <span className="text-slate-500 dark:text-white/50">/month</span>
-            </div>
-            <button 
-              onClick={() => openSubscriptionModal('audio_master')}
-              className="px-8 py-4 rounded-2xl bg-slate-900 dark:bg-white text-white dark:text-black hover:bg-slate-800 dark:hover:bg-white/90 font-bold transition-colors shadow-xl"
-            >
-              Get Audio Master
-            </button>
-          </div>
-        </div>
-      </div>
-    </motion.section>
-
-        {/* Before & After Showcase */}
-        <motion.section 
-          initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          className="mt-32"
-        >
-          <div className="text-center mb-16">
-            <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">Excellent Quality</h2>
-            <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Hear the difference. Our AI models are trained to isolate specific noise profiles while leaving the primary audio untouched.</p>
-          </div>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {NOISE_TYPES.map((type, idx) => (
-              <div key={idx} className="p-6 rounded-3xl bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 hover:bg-indigo-50/60 dark:hover:bg-white/[0.04] transition-colors shadow-md shadow-slate-200/50 dark:shadow-none">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="p-3 rounded-xl bg-indigo-100 dark:bg-indigo-500/10 text-indigo-700 dark:text-indigo-400">
-                    {type.icon}
-                  </div>
-                  <h3 className="font-semibold text-lg text-slate-900 dark:text-white">{type.name}</h3>
-                </div>
-                <div className="space-y-4">
-                  <div className="bg-slate-100 dark:bg-black/50 rounded-xl p-3 flex items-center justify-between border border-slate-200 dark:border-white/5">
-                    <span className="text-xs font-medium text-slate-600 dark:text-white/40 uppercase tracking-wider">Before</span>
-                    <button 
-                      onClick={() => toggleSamplePlayback(type.beforeUrl, idx, 'before')}
-                      className="w-8 h-8 rounded-full bg-white dark:bg-white/10 flex items-center justify-center hover:bg-slate-50 dark:hover:bg-white/20 transition-colors text-slate-900 dark:text-white shadow-sm dark:shadow-none"
-                    >
-                      {playingAudio?.url === type.beforeUrl ? <Pause className="w-4 h-4 ml-0.5" /> : <Play className="w-4 h-4 ml-0.5" />}
-                    </button>
-                  </div>
-                  <div className="bg-indigo-100 dark:bg-indigo-500/10 rounded-xl p-3 flex items-center justify-between border border-indigo-200 dark:border-indigo-500/20">
-                    <span className="text-xs font-medium text-indigo-800 dark:text-indigo-300 uppercase tracking-wider">After</span>
-                    <button 
-                      onClick={() => toggleSamplePlayback(type.afterUrl, idx, 'after')}
-                      className="w-8 h-8 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center hover:bg-indigo-500 dark:hover:bg-indigo-400 transition-colors shadow-lg shadow-indigo-500/20"
-                    >
-                      {playingAudio?.url === type.afterUrl ? <Pause className="w-4 h-4 text-white ml-0.5" /> : <Play className="w-4 h-4 text-white ml-0.5" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </motion.section>
-
-        {/* How it Works */}
-        <motion.section 
-          initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          className="mt-32 relative"
-        >
-          <div className="absolute inset-0 bg-indigo-100/80 dark:bg-indigo-500/5 rounded-[3rem] -z-10" />
-          <div className="p-10 sm:p-16 rounded-[3rem] border border-indigo-200 dark:border-white/5">
-            <div className="text-center mb-16">
-              <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">3 Easy Steps</h2>
-              <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Remove noise from audio & video online for free without learning complex editing tools.</p>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-12 relative">
-              {/* Connecting Line */}
-              <div className="hidden md:block absolute top-12 left-[15%] right-[15%] h-0.5 bg-indigo-300 dark:bg-indigo-500/20" />
-              
-              {STEPS.map((step, idx) => (
-                <div key={idx} className="relative z-10 flex flex-col items-center text-center">
-                  <div className="w-24 h-24 rounded-full bg-white dark:bg-[#0a0a0a] border border-indigo-200 dark:border-white/10 flex items-center justify-center mb-6 shadow-xl shadow-indigo-200/60 dark:shadow-xl relative group">
-                    <div className="absolute inset-0 rounded-full bg-indigo-100 dark:bg-indigo-500/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    <div className="text-indigo-700 dark:text-indigo-400 group-hover:scale-110 transition-transform">
-                      {step.icon}
-                    </div>
-                    <div className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-indigo-600 dark:bg-indigo-500 flex items-center justify-center text-white text-sm font-bold shadow-lg shadow-indigo-500/20">
-                      {idx + 1}
-                    </div>
-                  </div>
-                  <h3 className="text-xl font-bold mb-3 text-slate-900 dark:text-white">{step.title}</h3>
-                  <p className="text-slate-600 dark:text-white/50 leading-relaxed">{step.desc}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        </motion.section>
-
-        {/* Creators & Tools Grid */}
-        <motion.section 
-          initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          className="mt-32 grid grid-cols-1 lg:grid-cols-2 gap-8"
-        >
-          {/* Creators */}
-          <div className="p-10 rounded-[2.5rem] bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 shadow-md shadow-slate-200/50 dark:shadow-none">
-            <h2 className="text-3xl font-bold mb-4 text-slate-900 dark:text-white">Designed for Creators</h2>
-            <p className="text-slate-600 dark:text-white/50 mb-8">Millions of creators use SonicPure AI to enhance the quality of their content.</p>
-            <div className="flex flex-wrap gap-3">
-              {CREATORS.map((creator, idx) => (
-                <span key={idx} className="px-4 py-2 rounded-full bg-indigo-50 dark:bg-white/5 border border-indigo-200 dark:border-white/10 text-sm font-medium text-slate-700 dark:text-inherit hover:bg-indigo-100 dark:hover:bg-white/10 transition-colors cursor-default">
-                  {creator}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Other Tools */}
-          <div className="p-10 rounded-[2.5rem] bg-indigo-100 dark:bg-indigo-500/10 border border-indigo-300 dark:border-indigo-500/20 shadow-md shadow-indigo-200/50 dark:shadow-none">
-            <h2 className="text-3xl font-bold mb-4 text-slate-900 dark:text-white">Power Your Sound</h2>
-            <p className="text-indigo-800 dark:text-indigo-200/60 mb-8">Explore our suite of upcoming AI audio tools.</p>
-            <div className="grid grid-cols-2 gap-3">
-              {OTHER_TOOLS.map((tool, idx) => (
-                <div key={idx} className="flex items-center gap-2 p-3 rounded-xl bg-white dark:bg-black/20 border border-indigo-200 dark:border-white/5 text-sm font-medium text-slate-700 dark:text-inherit hover:bg-indigo-50 dark:hover:bg-black/40 transition-colors cursor-pointer group">
-                  <ArrowRight className="w-4 h-4 text-indigo-600 dark:text-indigo-400 opacity-0 -ml-6 group-hover:opacity-100 group-hover:ml-0 transition-all" />
-                  <span>{tool}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </motion.section>
-
-        {/* Testimonials */}
-        <motion.section 
-          initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          className="mt-32 mb-16"
-        >
-          <div className="text-center mb-16">
-            <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">What People Are Saying</h2>
-            <p className="text-slate-600 dark:text-white/50 text-lg max-w-2xl mx-auto">Join thousands of satisfied creators who have transformed their audio.</p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {TESTIMONIALS.map((t, idx) => (
-              <motion.div 
-                key={idx} 
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, delay: idx * 0.1 }}
-                viewport={{ once: true }}
-                className="p-8 rounded-3xl bg-white dark:bg-white/[0.02] border border-slate-200 dark:border-white/5 relative hover:border-indigo-400 dark:hover:border-indigo-500/30 transition-colors group shadow-md shadow-slate-200/50 dark:shadow-none"
-              >
-                <Quote className="absolute top-6 right-6 w-8 h-8 text-indigo-100 dark:text-white/5 group-hover:text-indigo-200 dark:group-hover:text-indigo-500/20 transition-colors" />
-                <div className="flex items-center gap-4 mb-6">
-                  <div className="w-12 h-12 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-lg shadow-lg shadow-indigo-500/30">
-                    {t.name.charAt(0)}
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-slate-900 dark:text-white">{t.name}</h4>
-                    <p className="text-xs text-slate-500 dark:text-white/40 uppercase tracking-wider">{t.role}</p>
-                  </div>
-                </div>
-                <p className="text-slate-700 dark:text-white/70 leading-relaxed italic">"{t.text}"</p>
-              </motion.div>
-            ))}
-          </div>
-        </motion.section>
-
-        {/* FAQ Section */}
-        <motion.section 
-          initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          className="mt-32 mb-16 max-w-3xl mx-auto"
-        >
-          <div className="text-center mb-16">
-            <h2 className="text-3xl sm:text-5xl font-bold mb-6 text-slate-900 dark:text-white">Frequently Asked Questions</h2>
-            <p className="text-slate-600 dark:text-white/50 text-lg">Everything you need to know about SonicPure AI.</p>
-          </div>
-          <div className="space-y-4">
-            {FAQS.map((faq, idx) => (
-              <motion.div 
-                key={idx}
-                initial={{ opacity: 0, y: 10 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: idx * 0.1 }}
-                viewport={{ once: true }}
-                className="border border-slate-200 dark:border-white/10 rounded-2xl overflow-hidden bg-white dark:bg-white/[0.02] shadow-sm shadow-slate-200/60 dark:shadow-none"
-              >
-                <button
-                  onClick={() => setOpenFaqIndex(openFaqIndex === idx ? null : idx)}
-                  className="w-full flex items-center justify-between p-6 text-left hover:bg-indigo-50/70 dark:hover:bg-white/[0.02] transition-colors"
-                >
-                  <span className="font-semibold text-lg pr-8 text-slate-900 dark:text-white">{faq.question}</span>
-                  {openFaqIndex === idx ? (
-                    <ChevronUp className="w-5 h-5 text-indigo-600 shrink-0" />
-                  ) : (
-                    <ChevronDown className="w-5 h-5 text-slate-500 shrink-0" />
-                  )}
-                </button>
-                <AnimatePresence>
-                  {openFaqIndex === idx && (
-                    <motion.div 
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.3 }}
-                      className="px-6 pb-6 text-slate-700 dark:text-white/60 leading-relaxed"
-                    >
-                      {faq.answer}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </motion.div>
-            ))}
-          </div>
-        </motion.section>
-
-      </main>
-
-      <footer className="py-16 border-t border-indigo-200 dark:border-white/5 bg-white dark:bg-[#050505]">
-        <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 md:grid-cols-4 gap-12">
-          <div className="col-span-1 md:col-span-2">
-            <div className="flex items-center gap-2 mb-6">
-              <img src="/logo.png" alt="" className="h-9 w-9 object-contain" />
-              <span className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">SonicPure <span className="text-indigo-600">AI</span></span>
-            </div>
-            <p className="text-slate-600 dark:text-gray-400 text-sm max-w-sm leading-relaxed mb-6">
-              Next-generation audio processing powered by AI. Remove background noise, enhance voices, and achieve studio-quality sound in seconds.
-            </p>
-            <div className="flex items-center gap-4">
-              <a href="#" className="text-slate-500 hover:text-indigo-700 dark:hover:text-white transition-colors">
-                <Twitter className="w-5 h-5" />
-              </a>
-              <a href="#" className="text-slate-500 hover:text-indigo-700 dark:hover:text-white transition-colors">
-                <Github className="w-5 h-5" />
-              </a>
-              <a href="#" className="text-slate-500 hover:text-indigo-700 dark:hover:text-white transition-colors">
-                <Linkedin className="w-5 h-5" />
-              </a>
-            </div>
-          </div>
-          <div>
-            <h4 className="font-semibold text-slate-900 dark:text-white mb-6">Tools</h4>
-            <ul className="space-y-4 text-sm text-slate-600 dark:text-gray-400">
-              <li><a href="#" className="hover:text-indigo-600 transition-colors">Noise Removal</a></li>
-              <li><a href="#" className="hover:text-indigo-600 transition-colors">Voice Isolation</a></li>
-              <li><a href="#" className="hover:text-indigo-600 transition-colors">Podcast Enhancer</a></li>
-              <li><a href="#" className="hover:text-indigo-600 transition-colors">API Access</a></li>
-            </ul>
-          </div>
-          <div>
-            <h4 className="font-semibold text-slate-900 dark:text-white mb-6">Contact</h4>
-            <ul className="space-y-4 text-sm text-slate-600 dark:text-gray-400">
-              <li><a href="mailto:support@sonicpure.ai" className="hover:text-indigo-600 transition-colors flex items-center gap-2"><Mail className="w-4 h-4" /> support@sonicpure.ai</a></li>
-              <li><a href="#" className="hover:text-indigo-600 transition-colors">Help Center</a></li>
-              <li><a href="#" className="hover:text-indigo-600 transition-colors">Terms of Service</a></li>
-              <li><a href="#" className="hover:text-indigo-600 transition-colors">Privacy Policy</a></li>
-            </ul>
-          </div>
-        </div>
-        <div className="max-w-7xl mx-auto px-6 mt-16 pt-8 border-t border-indigo-100 dark:border-white/5 text-center text-slate-500 dark:text-gray-500 text-xs">
-          &copy; {new Date().getFullYear()} SonicPure AI. All rights reserved.
-        </div>
-      </footer>
-    </div>
+      <SubscriptionModal
+        isOpen={upgradeTier !== null}
+        tier={upgradeTier || 'payg'}
+        isAuthenticated={Boolean(user)}
+        onClose={() => setUpgradeTier(null)}
+        onSignIn={() => setAuthMode('signup')}
+        onCheckout={(tier, credits) => setCheckout({ tier, credits })}
+      />
+    </>
   );
-};
-
-export default App;
+}

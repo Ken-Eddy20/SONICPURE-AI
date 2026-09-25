@@ -1,61 +1,79 @@
 export type SubscriptionTier = 'payg' | 'pro' | 'audio_master';
 
-export const TIER_DETAILS: Record<SubscriptionTier, {
+export interface TierDetails {
   name: string;
   price: string;
-  priceAmount: number; // For payment integration
+  priceAmount: number;
   period: string;
   description: string;
   features: string[];
   cta: string;
-}> = {
+  credits: string;
+}
+
+export const TIER_DETAILS: Record<SubscriptionTier, TierDetails> = {
   payg: {
     name: 'Pay As You Go',
-    price: 'Flexible',
-    priceAmount: 0, // Dynamic
+    price: 'From $1',
+    priceAmount: 0, // Chosen by the buyer: $1 per 20 credits
     period: '$1 per 20 credits',
-    description: 'Buy exactly the credits you need. Minimum $1.',
+    credits: 'Buy exactly what you need',
+    description: 'Top up any amount from 20 credits. Credits never expire.',
     features: [
-      'Custom credit amount',
-      'Never expire',
-      '4 highlights enhancements per day',
-      '30 mins max audio length',
-      'High priority processing',
+      'Credits never expire',
+      '4 enhancements per day',
+      'Files up to 30 minutes',
+      'Noise Removal, Studio Sound, Podcast Polish',
+      'Loudness targets and MP3 / WAV / FLAC / M4A export',
     ],
-    cta: 'Buy Credits',
+    cta: 'Buy credits',
   },
   pro: {
     name: 'Pro',
     price: '$20',
     priceAmount: 20,
     period: '/month',
-    description: 'For professional workflows.',
+    credits: '600 credits',
+    description: 'Full studio quality for weekly creators.',
     features: [
-      '600 credits / month',
-      'Extract audio from video',
-      '50 mins max audio length',
-      'Advanced noise profiles',
-      'Auto balance of volume',
-      'Auto gain',
+      '600 credits',
+      'Unlimited daily enhancements',
+      'Podcast Polish at full strength: fillers, stutters, mouth clicks, dead air',
+      'Custom Mix: choose every fix yourself',
+      'AI show notes: transcript, summary, chapters, social posts',
+      'Upload video and get cleaned video back',
+      'Files up to 50 minutes',
     ],
-    cta: 'Subscribe Now',
+    cta: 'Go Pro',
   },
   audio_master: {
-    name: 'Audio Master Studio',
+    name: 'Audio Master',
     price: '$60',
     priceAmount: 60,
     period: '/month',
-    description: 'The ultimate package for studios and heavy users.',
+    credits: '2,000 credits',
+    description: 'For studios, churches and teams processing every day.',
     features: [
-      '2000 Credits / month',
-      'Multiple Uploads',
-      'Highest Tier Enhancement',
-      'Auto balance of volume',
-      'Auto gain',
-      'Audio dereverberation',
-      'Audio restoration',
+      '2,000 credits',
+      'Everything in Pro',
+      'Batch upload: queue several files at once',
+      'No file length limit',
       'Priority support',
     ],
     cta: 'Get Audio Master',
   },
+};
+
+export const FREE_PLAN = {
+  name: 'Free',
+  price: '$0',
+  credits: '50 credits on signup',
+  description: 'Try it on a real recording.',
+  features: [
+    '50 free credits',
+    '2 enhancements per day',
+    'Files up to 20 minutes',
+    'Noise Removal, Studio Sound, Podcast Polish',
+    'Loudness targets and all export formats',
+  ],
 };

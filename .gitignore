@@ -13,6 +13,7 @@ dist-ssr
 *.local
 .env
 .env.*
+!.env.example
 server/.env
 *.service-key*.json
 *service key*.json

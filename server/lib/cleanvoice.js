@@ -1,116 +1,129 @@
 import { Cleanvoice } from '@cleanvoice/cleanvoice-sdk';
-import util from 'util';
+
+let client = null;
+
+function getClient() {
+  if (client) return client;
+  const apiKey = process.env.CLEANVOICE_API_KEY;
+  if (!apiKey) throw new Error('CLEANVOICE_API_KEY not set in server/.env');
+  client = new Cleanvoice({ apiKey });
+  return client;
+}
 
 /**
- * 80% QUALITY CONFIG (free and payg)
+ * Submit a job to Cleanvoice and return its edit id immediately.
+ * The SDK detects video from the URL extension and returns a video when it sees one.
+ * @param {string} fileUrl Public URL (Cloudinary secure_url)
+ * @param {Record<string, unknown>} config Cleanvoice ProcessingConfig
  */
-const noise_removal_80 = {
-  remove_noise: true,
-  normalize: true
+export async function startCleanvoiceJob(fileUrl, config) {
+  console.log('Cleanvoice createEdit:', JSON.stringify(config));
+  return getClient().createEdit(fileUrl, config);
+}
+
+const STAGE_LABELS = {
+  PENDING: 'Queued',
+  QUEUED: 'Queued',
+  RETRY: 'Queued',
+  STARTED: 'Starting up',
+  PREPROCESSING: 'Analyzing your audio',
+  CLASSIFICATION: 'Detecting noise and filler words',
+  EDITING: 'Cleaning and editing',
+  PROCESSING: 'Cleaning and editing',
+  POSTPROCESSING: 'Mastering and leveling',
+  EXPORT: 'Exporting your file',
+  SUCCESS: 'Finishing up',
 };
 
-const audio_enhancement_80 = {
-  studio_sound: true,
-  normalize: true
-};
-
-const voice_clarity_80 = {
-  studio_sound: true,
-  normalize: true,
-  breath: true
-};
-
-/**
- * 100% QUALITY CONFIG (pro and unlimited)
- */
-const noise_removal_100 = {
-  remove_noise: true,
-  normalize: true
-};
-
-const audio_enhancement_100 = {
-  studio_sound: true,
-  normalize: true
-};
-
-const voice_clarity_100 = {
-  studio_sound: true,
-  normalize: true,
-  fillers: true,
-  long_silences: true,
-  breath: true
-};
-
-const CONFIGS = {
-  80: {
-    noise_removal: noise_removal_80,
-    audio_enhancement: audio_enhancement_80,
-    voice_clarity: voice_clarity_80,
-  },
-  100: {
-    noise_removal: noise_removal_100,
-    audio_enhancement: audio_enhancement_100,
-    voice_clarity: voice_clarity_100,
-  }
+// Rough position of each stage in the pipeline, used when Cleanvoice gives no done/total.
+const STAGE_FLOOR = {
+  PENDING: 3, QUEUED: 3, RETRY: 3, STARTED: 8, PREPROCESSING: 15, CLASSIFICATION: 30,
+  EDITING: 50, PROCESSING: 50, POSTPROCESSING: 75, EXPORT: 90, SUCCESS: 98,
 };
 
 /**
- * processAudioCleaning
+ * Poll Cleanvoice once and normalise the answer.
+ * @param {string} editId
+ * @returns {Promise<
+ *   | { state: 'running', stage: string, percent: number }
+ *   | { state: 'failed', message: string }
+ *   | { state: 'done', result: any }
+ * >}
  */
-export async function processAudioCleaning(cloudinaryUrl, feature, plan) {
-  const key = process.env.CLEANVOICE_API_KEY;
-  if (!key) {
-    throw new Error('CLEANVOICE_API_KEY not set in server/.env');
+export async function checkCleanvoiceJob(editId) {
+  const res = await getClient().getEdit(editId);
+  const status = res.status;
+
+  if (status === 'FAILURE') {
+    const detail = res.result && typeof res.result === 'object'
+      ? res.result.error || res.result.message || res.result.exc_message
+      : null;
+    return { state: 'failed', message: detail ? String(detail) : 'Cleanvoice could not process this file.' };
   }
 
-  const qualityLevel = (plan === 'free' || plan === 'payg') ? 80 : 100;
-  
-  // Safe lookup config based on feature names
-  let featureKey = feature;
-  if (!['noise_removal', 'audio_enhancement', 'voice_clarity'].includes(featureKey)) {
-    featureKey = 'noise_removal'; 
+  const result = res.result;
+  if (status === 'SUCCESS' && result && typeof result === 'object' && 'download_url' in result) {
+    return { state: 'done', result };
   }
 
-  const config = CONFIGS[qualityLevel][featureKey];
+  let percent = STAGE_FLOOR[status] ?? 5;
+  if (result && typeof result === 'object' && 'done' in result && 'total' in result && result.total > 0) {
+    percent = Math.max(percent, Math.round((result.done / result.total) * 95));
+  }
+  return { state: 'running', stage: STAGE_LABELS[status] || 'Processing', percent: Math.min(percent, 97) };
+}
 
-  const client = new Cleanvoice({ apiKey: key });
+const MAX_TRANSCRIPT_CHARS = 250_000;
 
-  console.log(`Processing with Cleanvoice: plan=${plan}, quality=${qualityLevel}, feature=${featureKey}`);
-  console.log('Sending to Cleanvoice API:', config);
+/**
+ * Pull the parts of a Cleanvoice result worth keeping in Firestore (doc limit is 1 MB).
+ * @param {any} result Cleanvoice EditResult
+ */
+export function extractInsights(result) {
+  const stats = result.statistics || {};
+  const statistics = {
+    fillers: stats.FILLER_SOUND || 0,
+    stutters: stats.STUTTERING || 0,
+    mouthSounds: stats.MOUTH_SOUND || 0,
+    breaths: stats.BREATH || 0,
+    deadAir: stats.DEADAIR || 0,
+  };
 
-  try {
-    const secureUrl = cloudinaryUrl.replace('http://', 'https://');
-    console.log(`[Cleanvoice] Sending request:`, { url: secureUrl, feature: featureKey, quality: qualityLevel });
-    const result = await client.process(secureUrl, config);
-    console.log(`[Cleanvoice] Response received:`, result);
-
-    if (!result || !result.audio) {
-       throw new Error('Cleanvoice AI returned no result data.');
+  let transcript = null;
+  const t = result.transcription;
+  if (t && !Array.isArray(t) && Array.isArray(t.paragraphs)) {
+    let used = 0;
+    const paragraphs = [];
+    for (const p of t.paragraphs) {
+      const text = String(p.text || '');
+      if (used + text.length > MAX_TRANSCRIPT_CHARS) break;
+      used += text.length;
+      paragraphs.push({ start: p.start ?? 0, end: p.end ?? 0, text });
     }
+    transcript = { paragraphs, truncated: paragraphs.length < t.paragraphs.length };
+  }
 
-    return {
-      processedUrl: result.audio.url,
-      qualityLevel,
+  let summary = null;
+  const s = result.summarization;
+  if (s && !Array.isArray(s)) {
+    summary = {
+      title: s.title || '',
+      summary: s.summary || '',
+      episodeDescription: s.episode_description || '',
+      keyLearnings: s.key_learnings || '',
+      chapters: Array.isArray(s.chapters) ? s.chapters.map((c) => ({ start: c.start ?? 0, title: c.title || '' })) : [],
     };
-  } catch (err) {
-    console.error('Cleanvoice process error raw:', err);
-    // SDK errors might be complex objects with a .response or .detail
-    let detail = '';
-    try {
-      detail = JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
-    } catch (e) {
-      detail = String(err);
-    }
-    throw new Error(err.message && err.message !== '[object Object]' ? err.message : detail);
   }
-}
 
-export async function getJobStatus(jobId) {
-  // Mock function if needed, SDK handles internal polling automatically via process()
-  return 'completed';
-}
+  let social = null;
+  const sc = result.social_content;
+  if (sc && !Array.isArray(sc)) {
+    social = {
+      twitterThread: sc.twitter_thread || '',
+      linkedin: sc.linkedin || '',
+      newsletter: sc.newsletter || '',
+    };
+  }
 
-export async function deleteCleanvoiceJob(jobId) {
-  // Manual clean up if necessary depending on SDK implementation
-  return true;
+  return { statistics, transcript, summary, social, isVideo: Boolean(result.video) };
 }
