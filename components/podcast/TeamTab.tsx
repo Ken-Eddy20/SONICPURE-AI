@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Check, Copy, Loader2, MessageCircle, RefreshCw, UserMinus } from 'lucide-react';
-import { ApiError, leaveShow, regenerateInvite, removeShowMember, type Show, type ShowMember } from '../../services/api';
+import { ApiError, regenerateInvite, removeShowMember, type Show, type ShowMember } from '../../services/api';
 import { showType } from '../../shared/processing.js';
+import LeaveOrDelete from './LeaveOrDelete';
 
 interface Props {
   show: Show;
@@ -104,17 +105,10 @@ export default function TeamTab({ show, members, onChanged }: Props) {
             </li>
           ))}
         </ul>
-        {!owner && (
-          <button
-            type="button"
-            disabled={busy !== null}
-            onClick={() => window.confirm(`Leave ${show.name}? You will go back to your own plan and credits.`) && act('leave', leaveShow)}
-            className="btn-ghost mt-4 py-2 text-danger"
-          >
-            Leave this team
-          </button>
-        )}
         {error && <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-3 text-sm text-danger">{error}</p>}
+      </div>
+      <div className="lg:col-span-2">
+        <LeaveOrDelete show={show} onChanged={onChanged} />
       </div>
     </div>
   );

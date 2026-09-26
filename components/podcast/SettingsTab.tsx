@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, ImagePlus, Loader2 } from 'lucide-react';
 import { ApiError, updateShow, uploadShowArtwork, type PodcastSettings, type Show, type ShowType } from '../../services/api';
 import { PODCAST_CATEGORIES, SHOW_TYPES, showType } from '../../shared/processing.js';
+import LeaveOrDelete from './LeaveOrDelete';
 
 interface Props {
   show: Show;
@@ -235,6 +236,9 @@ export default function SettingsTab({ show, onChanged }: Props) {
         <a href={show.feedUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost mt-5 w-full py-2.5 text-xs">
           Preview feed <ExternalLink className="h-3.5 w-3.5" />
         </a>
+      </div>
+      <div className="lg:col-span-2">
+        <LeaveOrDelete show={show} onChanged={onChanged} />
       </div>
     </div>
   );

@@ -51,6 +51,7 @@ One engine for every "show". When creating the account the owner picks a type, a
 - **Episode studio:** upload a recording; it is cleaned with Podcast Polish at podcast loudness, music protected, with title, summary, chapters and social posts.
 - **Podcast feed:** `GET /feeds/show/<showId>.xml` is a public RSS feed (Apple/Spotify format) with category, subcategory, explicit flag, seasons and episode numbers. `/feeds/church/<id>.xml` still works for feeds submitted before the rename.
 - The type can be changed later in Podcast settings; the feed wording follows.
+- **Leaving:** members use "Leave this team". The owner deletes the account (Team or Podcast settings, type the name to confirm, `DELETE /api/shows`): everyone is unlinked, episodes and the feed are removed, remaining shared credits are forfeited, audio files stay with their uploaders.
 
 ## Local-language transcripts and captions (Khaya AI)
 

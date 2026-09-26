@@ -296,6 +296,8 @@ export const createShow = (name: string, type: ShowType) =>
 export const joinShow = (code: string) => apiFetch<{ id: string }>('/api/shows/join', { method: 'POST', body: JSON.stringify({ code }) });
 export const leaveShow = () => apiFetch<{ success: boolean }>('/api/shows/leave', { method: 'POST' });
 export const removeShowMember = (uid: string) => apiFetch<{ success: boolean }>(`/api/shows/members/${uid}`, { method: 'DELETE' });
+export const deleteShow = (confirmName: string) =>
+  apiFetch<{ success: boolean }>('/api/shows', { method: 'DELETE', body: JSON.stringify({ confirmName }) });
 export const regenerateInvite = () => apiFetch<{ inviteCode: string }>('/api/shows/invite', { method: 'POST' });
 export const updateShow = (body: { name?: string; type?: ShowType; podcast?: PodcastSettings }) =>
   apiFetch<{ success: boolean }>('/api/shows', { method: 'PATCH', body: JSON.stringify(body) });

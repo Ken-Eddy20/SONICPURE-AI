@@ -84,8 +84,10 @@ export async function refundJob(jobRef, reason) {
     const job = snap.data();
     if (!job || job.refunded || job.status === 'done') return false;
     const cost = job.creditsUsed || 0;
-    if (cost > 0 && job.billedTo) {
-      tx.update(billingRefFor(job.billedTo), {
+    // The pool may be gone (a deleted show); then there is nothing to refund into.
+    const billingRef = cost > 0 && job.billedTo ? billingRefFor(job.billedTo) : null;
+    if (billingRef && (await tx.get(billingRef)).exists) {
+      tx.update(billingRef, {
         credits: FieldValue.increment(cost),
         creditsUsedThisMonth: FieldValue.increment(-cost),
       });

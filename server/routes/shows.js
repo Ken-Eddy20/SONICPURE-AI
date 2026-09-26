@@ -195,8 +195,31 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
   router.post('/leave', route('Could not leave', async (req, res) => {
     const { uid } = await verifyAuth(req);
     const { ref, role } = await myShow(uid);
-    if (role === 'owner') throw new HttpError(400, 'The owner cannot leave. Remove the other members first, or contact support to transfer the account.');
+    if (role === 'owner') throw new HttpError(400, 'The owner cannot leave. Delete the account instead.');
     await removeMember(ref, uid);
+    res.json({ success: true });
+  }));
+
+  // Owner closes the account: everyone is unlinked, episodes and the feed are removed.
+  // Audio files stay in each uploader's own library.
+  router.delete('/', route('Could not delete the account', async (req, res) => {
+    const { uid } = await verifyAuth(req);
+    const { ref, show } = await myShow(uid, { requireOwner: true });
+    const typed = clean(req.body?.confirmName, 80).toLowerCase();
+    if (typed !== String(show.name || '').trim().toLowerCase()) throw new HttpError(400, 'Type the account name exactly to confirm.');
+
+    const eps = await episodes().where('showId', '==', ref.id).get();
+    const members = await ref.collection('members').get();
+    const batch = adminDb.batch();
+    for (const d of eps.docs) batch.delete(d.ref);
+    for (const d of members.docs) batch.delete(d.ref);
+    for (const memberUid of new Set([...(show.memberIds || []), show.ownerId])) {
+      const userRef = users().doc(memberUid);
+      if ((await userRef.get()).data()?.showId === ref.id) batch.update(userRef, { showId: null });
+    }
+    batch.delete(ref);
+    await batch.commit();
+    console.log(`[shows] ${uid} deleted show ${ref.id} (${show.name}), ${eps.size} episodes, ${Number(show.credits || 0)} credits forfeited`);
     res.json({ success: true });
   }));
 
