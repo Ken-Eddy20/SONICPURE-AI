@@ -12,6 +12,8 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
 import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '../lib/firebaseAdmin.js';
 import { uploadAudio, saveProcessedAudio, saveExtractedAudio, deleteAudio, transcodedUrl } from '../lib/cloudinary.js';
@@ -67,7 +69,19 @@ const ALLOWED_ORIGINS = (
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    // The website is served from here too: it loads Paystack, Google sign-in, Cloudinary and R2 media,
+    // and Google sign-in needs its popup to report back.
+    contentSecurityPolicy: false,
+    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+  }),
+);
+
+/** The built website (npm run build). When present, this server hosts the site and the API on one address. */
+const DIST_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
+const SERVE_SITE = fs.existsSync(path.join(DIST_DIR, 'index.html'));
 
 // Podcast feeds are public and read by Apple/Spotify servers, so they skip CORS.
 const showRoutes = showsRouter({
@@ -79,12 +93,13 @@ app.get('/feeds/show/:id', showRoutes.feed);
 // Feed links created before podcasts and churches were merged keep working.
 app.get('/feeds/church/:id', showRoutes.feed);
 
+// Same-origin requests (the site served by this server, or Render's own URL) are always allowed.
 app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
-      return callback(new Error('Not allowed by CORS'));
-    },
+  cors((req, callback) => {
+    const origin = req.header('Origin');
+    const self = `${req.protocol}://${req.get('host')}`;
+    const allowed = !origin || origin === self || origin === process.env.RENDER_EXTERNAL_URL || ALLOWED_ORIGINS.includes(origin);
+    callback(allowed ? null : new Error('Not allowed by CORS'), { origin: allowed });
   }),
 );
 
@@ -108,7 +123,7 @@ app.use((req, res, next) => {
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
 
-app.get('/', (req, res) => {
+app.get(SERVE_SITE ? '/api/health' : '/', (req, res) => {
   res.json({ status: 'ok', message: 'SonicPure API is running', transcripts: khayaConfigured() });
 });
 
@@ -803,6 +818,26 @@ async function applyPaymentOnce(userId, tier, txData) {
   return { creditsAdded };
 }
 
+// ─── Website ─────────────────────────────────────────────────────
+
+if (SERVE_SITE) {
+  // Hashed build files never change, so they can be cached for a year; index.html must not be.
+  app.use(
+    express.static(DIST_DIR, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        if (filePath.includes(`${path.sep}assets${path.sep}`)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      },
+    }),
+  );
+  // Every other page is the single-page app.
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/feeds/')) return next();
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+}
+
 // ─── Recovery ────────────────────────────────────────────────────
 
 /** Transcript, caption and meeting jobs run in this process; any left running by a restart are refunded. */
@@ -820,7 +855,7 @@ async function recoverInterruptedJobs() {
 
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
-  diskLog(`SonicPure API server on http://localhost:${PORT}`);
+  diskLog(`SonicPure API server on http://localhost:${PORT}${SERVE_SITE ? ' (also serving the website from dist/)' : ''}`);
   if (!process.env.CLEANVOICE_API_KEY) diskLog('WARNING: CLEANVOICE_API_KEY not set - audio processing will fail');
   if (!khayaConfigured()) diskLog('WARNING: KHAYA_API_KEY not set - local-language transcripts and captions are disabled');
   if (!minutesConfigured()) diskLog('WARNING: ANTHROPIC_API_KEY not set - meeting minutes are disabled');
