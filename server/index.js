@@ -93,12 +93,15 @@ app.get('/feeds/show/:id', showRoutes.feed);
 // Feed links created before podcasts and churches were merged keep working.
 app.get('/feeds/church/:id', showRoutes.feed);
 
+// The Vite dev server opened from a phone on the same Wi-Fi (private network address, port 5173).
+const DEV_LAN_ORIGIN = /^http:\/\/(10\.\d+|172\.(1[6-9]|2\d|3[01])|192\.168)\.\d+\.\d+:5173$/;
+
 // Same-origin requests (the site served by this server, or Render's own URL) are always allowed.
 app.use(
   cors((req, callback) => {
     const origin = req.header('Origin');
     const self = `${req.protocol}://${req.get('host')}`;
-    const allowed = !origin || origin === self || origin === process.env.RENDER_EXTERNAL_URL || ALLOWED_ORIGINS.includes(origin);
+    const allowed = !origin || origin === self || origin === process.env.RENDER_EXTERNAL_URL || ALLOWED_ORIGINS.includes(origin) || DEV_LAN_ORIGIN.test(origin);
     callback(allowed ? null : new Error('Not allowed by CORS'), { origin: allowed });
   }),
 );
