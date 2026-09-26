@@ -412,3 +412,29 @@ export async function uploadMeeting(
   await apiFetch(`/api/meetings/${id}/complete`, { method: 'POST' });
   return { id };
 }
+
+// ─── Recorder library ────────────────────────────────────────────
+
+export interface SavedRecording {
+  id: string;
+  title: string;
+  meta: Record<string, string>;
+  audioUrl: string;
+  coverUrl: string | null;
+  bytes: number;
+  durationSeconds: number;
+  createdAt: string | null;
+}
+
+export const listRecordings = () => apiFetch<{ recordings: SavedRecording[]; limit: number | null }>('/api/recordings');
+export const deleteRecording = (id: string) => apiFetch<{ success: boolean }>(`/api/recordings/${id}`, { method: 'DELETE' });
+export const recordingToStudio = (id: string) =>
+  apiFetch<{ fileId: string; durationSeconds: number }>(`/api/recordings/${id}/studio`, { method: 'POST' });
+
+export function saveRecording(mp3: Blob, fileName: string, meta: Record<string, string>, cover: Blob | null) {
+  const form = new FormData();
+  form.append('audio', new File([mp3], fileName, { type: 'audio/mpeg' }));
+  form.append('meta', JSON.stringify(meta));
+  if (cover) form.append('cover', new File([cover], 'cover.jpg', { type: 'image/jpeg' }));
+  return apiFetch<SavedRecording>('/api/recordings', { method: 'POST', body: form });
+}

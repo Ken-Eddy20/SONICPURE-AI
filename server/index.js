@@ -25,6 +25,7 @@ import transcriptsRouter from './routes/transcripts.js';
 import captionsRouter from './routes/captions.js';
 import churchRouter from './routes/church.js';
 import meetingsRouter from './routes/meetings.js';
+import recordingsRouter from './routes/recordings.js';
 import { minutesConfigured } from './lib/claude.js';
 import {
   PROFILES,
@@ -103,6 +104,7 @@ app.use('/api/transcripts', transcriptsRouter({ limiter: uploadLimiter }));
 app.use('/api/captions', captionsRouter({ limiter: uploadLimiter }));
 app.use('/api/church', churchRoutes.router);
 app.use('/api/meetings', meetingsRouter({ limiter: uploadLimiter }));
+app.use('/api/recordings', recordingsRouter({ limiter: uploadLimiter }));
 
 // ─── Helpers ─────────────────────────────────────────────────────
 

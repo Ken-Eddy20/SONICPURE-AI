@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
+    "@breezystack/lamejs": "^1.2.7",
     "@cleanvoice/cleanvoice-sdk": "^3.0.2",
+    "browser-id3-writer": "^6.4.0",
     "cloudinary": "^2.9.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

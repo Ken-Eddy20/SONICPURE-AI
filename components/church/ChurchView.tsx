@@ -1,23 +1,27 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Church as ChurchIcon, Loader2, Mic2, Podcast, Users } from 'lucide-react';
-import { ApiError, createChurch, getChurch, joinChurch, type Church, type ChurchMember } from '../../services/api';
+import { AudioLines, Church as ChurchIcon, Loader2, Mic2, Podcast, Users } from 'lucide-react';
+import { ApiError, createChurch, getChurch, joinChurch, type Church, type ChurchMember, type Plan } from '../../services/api';
+import RecorderStudio from '../recorder/RecorderStudio';
 import type { SubscriptionTier } from '../../constants/subscriptionPlans';
 import SermonsTab from './SermonsTab';
 import TeamTab from './TeamTab';
 import PodcastTab from './PodcastTab';
 
-type Tab = 'sermons' | 'team' | 'podcast';
+type Tab = 'recorder' | 'sermons' | 'team' | 'podcast' | 'setup';
 
 interface Props {
+  plan: Plan;
+  /** The user's church has an active Church plan. */
+  churchActive: boolean;
   onChoosePlan: (tier: SubscriptionTier) => void;
   /** Called after joining/creating/leaving so the app re-reads the user's church. */
   onChurchChanged: () => void;
 }
 
-export default function ChurchView({ onChoosePlan, onChurchChanged }: Props) {
+export default function ChurchView({ plan, churchActive, onChoosePlan, onChurchChanged }: Props) {
   const [church, setChurch] = useState<Church | null | undefined>(undefined);
   const [members, setMembers] = useState<ChurchMember[]>([]);
-  const [tab, setTab] = useState<Tab>('sermons');
+  const [tab, setTab] = useState<Tab>('recorder');
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -49,26 +53,35 @@ export default function ChurchView({ onChoosePlan, onChurchChanged }: Props) {
     );
   }
 
-  if (!church) return <ChurchSetup onDone={changed} error={error} />;
+  // The recorder is free and works without a church account; the rest needs one.
+  const tabs: [Tab, string, typeof Mic2][] = church
+    ? [
+        ['recorder', 'Record & edit', AudioLines],
+        ['sermons', 'Sermons', Mic2],
+        ['team', `Team (${church.memberCount}/${church.maxMembers})`, Users],
+        ['podcast', 'Podcast', Podcast],
+      ]
+    : [
+        ['recorder', 'Record & edit', AudioLines],
+        ['setup', 'Church account', ChurchIcon],
+      ];
+  const current = tabs.some(([id]) => id === tab) ? tab : 'recorder';
+  const upgrade = (tier?: 'payg' | 'church') => (tier === 'church' && !church ? setTab('setup') : onChoosePlan(tier || 'payg'));
 
   return (
     <div className="space-y-6">
-      <ChurchHeader church={church} onActivate={() => onChoosePlan('church')} />
+      {church && <ChurchHeader church={church} onActivate={() => onChoosePlan('church')} />}
 
       <div className="flex gap-1 overflow-x-auto rounded-full border border-line bg-surface p-1 scrollbar-thin sm:w-fit" role="tablist">
-        {([
-          ['sermons', 'Sermons', Mic2],
-          ['team', `Team (${church.memberCount}/${church.maxMembers})`, Users],
-          ['podcast', 'Podcast', Podcast],
-        ] as const).map(([id, label, Icon]) => (
+        {tabs.map(([id, label, Icon]) => (
           <button
             key={id}
             type="button"
             role="tab"
-            aria-selected={tab === id}
+            aria-selected={current === id}
             onClick={() => setTab(id)}
             className={`flex shrink-0 items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition-colors ${
-              tab === id ? 'bg-ink text-bg' : 'text-muted hover:text-ink'
+              current === id ? 'bg-ink text-bg' : 'text-muted hover:text-ink'
             }`}
           >
             <Icon className="h-4 w-4" /> {label}
@@ -76,9 +89,11 @@ export default function ChurchView({ onChoosePlan, onChurchChanged }: Props) {
         ))}
       </div>
 
-      {tab === 'sermons' && <SermonsTab church={church} onActivate={() => onChoosePlan('church')} onChanged={reload} />}
-      {tab === 'team' && <TeamTab church={church} members={members} onChanged={changed} />}
-      {tab === 'podcast' && <PodcastTab church={church} onChanged={reload} />}
+      {current === 'recorder' && <RecorderStudio plan={plan} churchActive={churchActive} onUpgrade={upgrade} />}
+      {current === 'setup' && <ChurchSetup onDone={changed} error={error} />}
+      {church && current === 'sermons' && <SermonsTab church={church} onActivate={() => onChoosePlan('church')} onChanged={reload} />}
+      {church && current === 'team' && <TeamTab church={church} members={members} onChanged={changed} />}
+      {church && current === 'podcast' && <PodcastTab church={church} onChanged={reload} />}
     </div>
   );
 }

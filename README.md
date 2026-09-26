@@ -17,6 +17,14 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 - **Plans:** Free (50 credits), Pay As You Go ($1 per 20 credits, any amount), Pro ($20, 600 credits), Audio Master ($60, 2,000 credits). Prices in USD, charged in GHS at the live rate via Paystack.
 - Credit cost shown before every job; failed jobs refund automatically.
 
+## Recorder (free, in the Church tab)
+
+- **Record live** in the browser from a mic or church mixer: input picker, level meter with clipping and too-quiet warnings, pause/resume, screen kept awake. Every 5 seconds the recording is saved in the browser (IndexedDB), so a crash or closed tab can be recovered from the Recorder page.
+- **Edit** recordings or any opened audio/video file: waveform with zoom and overview, drag or type exact selections, crop, cut out, mute, volume in dB, normalise, fade in/out, insert silence, unlimited undo/redo (Space, Delete, Ctrl+Z/Y). Editing is non-destructive (`services/audioEdit.ts`): the audio is decoded once and edits are a list of clips, so memory stays flat. Files up to 3 hours; long ones are edited at speech quality to fit in memory.
+- **Details**: cover art, title, artist, album, album artist, composer, genre, year, track and comment are written into the MP3 as ID3 tags (`browser-id3-writer`). MP3 encoding runs in a Web Worker (`@breezystack/lamejs`, LGPL) in 5-minute windows.
+- **Save, download, share**: download the MP3; share to WhatsApp or Telegram (the file itself on phones, a link to the saved copy on computers); save to the cloud library (`recordings` collection; free plan keeps ${FREE_RECORDING_LIMIT} = 10 recordings).
+- **Paid**: "Clean with AI" (needs a paid plan; uses credits) and "Publish to Spotify & Apple Podcasts" (Church plan: cleans it, writes sermon notes and creates a sermon for the podcast feed). Both reuse the saved file without re-uploading.
+
 ## Meetings
 
 - Upload meeting recordings (audio or video) up to 3 GB. The browser sends the file in 8 MB pieces with automatic retries; the server keeps only a compact speech MP3 (about 14 MB per hour), never the video.
@@ -54,6 +62,7 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 | `sermons` | server | Sermon details linked to an `audioFiles` doc, draft/published |
 | `transcripts` | server | Khaya transcripts and translations with timed segments |
 | `captionJobs` | server | Burned-in caption renders |
+| `recordings` | server | Recorder library: edited, tagged MP3s with cover art |
 | `meetings` (+ `parts`) | server | Meeting uploads, transcripts, translations, speaker names and minutes |
 | `transactions`, `usageLogs` | server | Payments and usage history |
 

@@ -201,7 +201,7 @@ export default function Studio({ user, account, onChoosePlan, onSignOut }: Studi
         </main>
       ) : view === 'church' ? (
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
-          <ChurchView onChoosePlan={onChoosePlan} onChurchChanged={() => undefined} />
+          <ChurchView plan={account.plan} churchActive={account.churchBilling} onChoosePlan={onChoosePlan} onChurchChanged={() => undefined} />
         </main>
       ) : view === 'studio' ? (
         <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 sm:py-8 lg:grid-cols-[minmax(0,1fr)_340px]">

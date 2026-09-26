@@ -86,6 +86,11 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Recorder library: served only through the API to its owner.
+    match /recordings/{recordingId} {
+      allow read, write: if false;
+    }
+
     // Meetings can be confidential: served only through the API to their owner.
     match /meetings/{meetingId}/{document=**} {
       allow read, write: if false;

@@ -137,6 +137,7 @@ async function seed() {
   console.log('  - transcripts    (local-language transcripts and translations)');
   console.log('  - captionJobs    (burned-in video captions)');
   console.log('  - meetings       (meeting transcripts and minutes; parts subcollection)');
+  console.log('  - recordings     (Recorder library: edited, tagged MP3s with cover art)');
 }
 
 seed().catch((err) => {

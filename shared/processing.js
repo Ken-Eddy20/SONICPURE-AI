@@ -331,3 +331,8 @@ export function estimateMeetingCredits(durationSeconds, opts = {}) {
   const hours = Math.max(1, Math.ceil((durationSeconds || 60) / 3600));
   return estimateTranscriptCredits(durationSeconds, Boolean(opts.translate)) + (opts.minutes ? hours * MINUTES_CREDITS_PER_HOUR : 0);
 }
+
+// ─── Recorder ────────────────────────────────────────────────────
+
+/** Recordings a free user can keep in their cloud library (download and share are unlimited). */
+export const FREE_RECORDING_LIMIT = 10;
