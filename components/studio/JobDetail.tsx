@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { PROFILES } from '../../shared/processing.js';
 import { getJob, type AudioJob } from '../../services/api';
-import { attachmentUrl, baseName, downloadText, formatDuration, toSrt } from '../../services/media';
+import { attachmentUrl, baseName, downloadText, formatDuration, timeUntil, toSrt } from '../../services/media';
 import ComparePlayer from './ComparePlayer';
 import TranscriptsPanel from './TranscriptsPanel';
 
@@ -41,7 +41,7 @@ export default function JobDetail({ job, onBack, onDelete, onUpgrade }: JobDetai
             {job.creditsUsed ? ` · ${job.creditsUsed} credits` : ''}
           </p>
         </div>
-        {(job.status === 'processed' || job.status === 'failed') && (
+        {(job.status === 'processed' || job.status === 'failed' || job.status === 'expired') && (
           <button
             type="button"
             onClick={() => onDelete(job)}
@@ -66,6 +66,13 @@ export default function JobDetail({ job, onBack, onDelete, onUpgrade }: JobDetai
           />
         )}
         {job.status === 'failed' && <Failed job={job} onUpgrade={onUpgrade} />}
+        {job.status === 'expired' && (
+          <div className="rounded-3xl border border-line bg-sunken p-6 text-sm">
+            <p className="font-bold">This audio has been deleted</p>
+            <p className="mt-1 text-muted">SonicPure keeps files only for a short time and does not keep backups. Any notes and transcripts are still below.</p>
+          </div>
+        )}
+        {job.status === 'expired' && job.hasNotes && <ExpiredNotes job={job} />}
         {job.status === 'processed' && job.processedFileUrl && (
           <div className="space-y-5">
             <Result job={job} />
@@ -75,6 +82,15 @@ export default function JobDetail({ job, onBack, onDelete, onUpgrade }: JobDetai
       </div>
     </div>
   );
+}
+
+function ExpiredNotes({ job: initial }: { job: ClientJob }) {
+  const [job, setJob] = useState<AudioJob>(initial);
+  useEffect(() => {
+    setJob(initial);
+    if (initial.transcript === undefined) getJob(initial.fileId).then(setJob).catch(() => {});
+  }, [initial]);
+  return <div className="mt-5"><Notes job={job} /></div>;
 }
 
 function Progress({ label, detail, percent, pulse }: { label: string; detail: string; percent: number; pulse?: boolean }) {
@@ -146,7 +162,16 @@ function Result({ job: initial }: { job: ClientJob }) {
         <video src={job.processedFileUrl!} controls playsInline className="w-full rounded-3xl border border-line bg-black" />
       )}
 
-      <ComparePlayer originalUrl={job.originalFileUrl} cleanedUrl={job.processedFileUrl!} />
+      {job.originalFileUrl && !job.originalRemoved ? (
+        <>
+          <ComparePlayer originalUrl={job.originalFileUrl} cleanedUrl={job.processedFileUrl!} />
+          {job.originalDeleteAt && (
+            <p className="-mt-2 text-xs text-muted">The original is kept for this comparison until it is deleted {timeUntil(job.originalDeleteAt)}.</p>
+          )}
+        </>
+      ) : (
+        !job.processedIsVideo && <audio src={job.processedFileUrl!} controls preload="metadata" className="w-full" />
+      )}
 
       <div className="flex flex-wrap gap-2">
         <span className="chip border-accent/30 bg-accent-soft text-accent">Background noise removed</span>
@@ -161,10 +186,17 @@ function Result({ job: initial }: { job: ClientJob }) {
         <a href={attachmentUrl(job.processedFileUrl!, job.originalFileName)} className="btn-primary px-6 py-3">
           <Download className="h-4 w-4" /> Download cleaned {ext.toUpperCase()}
         </a>
-        <a href={job.originalFileUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost px-6 py-3">
-          Original
-        </a>
+        {job.originalFileUrl && !job.originalRemoved && (
+          <a href={job.originalFileUrl} target="_blank" rel="noopener noreferrer" className="btn-ghost px-6 py-3">
+            Original
+          </a>
+        )}
       </div>
+      {job.expiresAt && (
+        <p className="rounded-2xl bg-warn-soft px-4 py-3 text-sm text-ink">
+          <strong className="text-warn">Download it before it goes.</strong> This file is deleted {timeUntil(job.expiresAt)} ({new Date(job.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}). SonicPure does not keep backups.
+        </p>
+      )}
       {job.hasNotes && <Notes job={job} />}
     </div>
   );

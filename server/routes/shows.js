@@ -9,10 +9,11 @@ import multer from 'multer';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '../../lib/firebaseAdmin.js';
 import { uploadArtwork } from '../../lib/cloudinary.js';
-import { HttpError, route, verifyAuth, iso } from '../lib/http.js';
+import { HttpError, route, verifyAuth, iso, diskLog, formatError } from '../lib/http.js';
+import { deleteHosted, hostEpisode } from '../lib/hosting.js';
 import { getAccessibleFile } from '../lib/accounts.js';
 import { buildPodcastFeed } from '../lib/podcast.js';
-import { PODCAST_CATEGORIES, SHOW_TYPE_IDS, isShowPlan, showMaxMembers, showType } from '../../shared/processing.js';
+import { PODCAST_CATEGORIES, SHOW_TYPE_IDS, hostingHours, isShowPlan, showMaxMembers, showType } from '../../shared/processing.js';
 
 const shows = () => adminDb.collection('shows');
 const episodes = () => adminDb.collection('episodes');
@@ -50,7 +51,13 @@ async function myShow(uid, { requireOwner = false } = {}) {
   return { ref, show, role, user };
 }
 
-function serializeShow(id, s, role, feedUrl) {
+/** Seconds of audio this show has online (published episodes, plus any being published now). */
+async function hostedSeconds(showId, exceptEpisodeId = null) {
+  const snap = await adminDb.collection('episodes').where('showId', '==', showId).where('status', 'in', ['published', 'publishing']).get();
+  return snap.docs.reduce((sum, d) => (d.id === exceptEpisodeId ? sum : sum + Number(d.data().hosted?.seconds || d.data().hostingSeconds || 0)), 0);
+}
+
+function serializeShow(id, s, role, feedUrl, usedSeconds = 0) {
   return {
     id,
     name: s.name,
@@ -66,6 +73,8 @@ function serializeShow(id, s, role, feedUrl) {
     role,
     podcast: s.podcast || {},
     feedUrl,
+    hostingUsedSeconds: Math.round(usedSeconds),
+    hostingLimitHours: hostingHours(s.plan),
   };
 }
 
@@ -83,8 +92,10 @@ function episodeView(id, e, file) {
     date: e.date || '',
     description: e.description || '',
     status: e.status,
+    publishError: e.publishError || null,
     createdAt: iso(e.createdAt),
     publishedAt: iso(e.publishedAt),
+    hosted: e.hosted ? { url: e.hosted.url, seconds: e.hosted.seconds || 0, bytes: e.hosted.bytes || 0 } : null,
     file: file
       ? {
           status: file.status === 'finalizing' ? 'processing' : file.status === 'uploading' ? 'uploaded' : file.status,
@@ -92,6 +103,9 @@ function episodeView(id, e, file) {
           percent: file.percent ?? null,
           durationSeconds: file.durationSeconds || 0,
           processedFileUrl: file.processedFileUrl || null,
+          originalFileUrl: file.extractedAudioUrl || file.originalFileUrl || null,
+          cleaned: Boolean(file.feature),
+          deleteAt: iso(file.deleteAt),
           summaryTitle: file.summary?.title || null,
           error: file.error || null,
         }
@@ -151,7 +165,8 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     const members = membersSnap.docs
       .map((d) => ({ uid: d.id, email: d.data().email || '', displayName: d.data().displayName || '', role: d.data().role, joinedAt: iso(d.data().joinedAt) }))
       .sort((a, b) => (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : (a.joinedAt || '').localeCompare(b.joinedAt || '')));
-    res.json({ show: serializeShow(snap.id, s, s.ownerId === uid ? 'owner' : 'editor', feedUrlFor(req, snap.id)), members, accounts });
+    const used = await hostedSeconds(snap.id);
+    res.json({ show: serializeShow(snap.id, s, s.ownerId === uid ? 'owner' : 'editor', feedUrlFor(req, snap.id), used), members, accounts });
   }));
 
   router.post('/', route('Could not create the account', async (req, res) => {
@@ -240,6 +255,7 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     if (typed !== String(show.name || '').trim().toLowerCase()) throw new HttpError(400, 'Type the account name exactly to confirm.');
 
     const eps = await episodes().where('showId', '==', ref.id).get();
+    for (const d of eps.docs) await deleteHosted(d.data().hosted).catch((err) => diskLog(`[shows] could not delete hosted audio for ${d.id}: ${formatError(err)}`));
     const members = await ref.collection('members').get();
     const batch = adminDb.batch();
     for (const d of eps.docs) batch.delete(d.ref);
@@ -351,14 +367,26 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     const b = req.body || {};
     const updates = episodeFields(b, { partial: true });
     if (updates.title === '') throw new HttpError(400, 'Give it a title.');
-    if (b.status === 'published' || b.status === 'draft') {
-      if (b.status === 'published') {
-        const file = (await adminDb.collection('audioFiles').doc(episode.fileId).get()).data();
-        if (file?.status !== 'processed') throw new HttpError(409, 'The audio must finish cleaning before it can be published.');
-        if (file.processedIsVideo) throw new HttpError(400, 'Podcast episodes need audio. Clean it as audio to publish it.');
-        if (!episode.publishedAt) updates.publishedAt = new Date();
+    if (b.status === 'published' && episode.status !== 'published' && episode.status !== 'publishing') {
+      const { show } = await myShow(uid);
+      if (!isShowPlan(show.plan)) throw new HttpError(402, 'Activate the Podcast or Church plan to publish.', { upgrade: true });
+      const file = (await adminDb.collection('audioFiles').doc(episode.fileId).get()).data();
+      const source = publishSource(file);
+      const limit = hostingHours(show.plan) * 3600;
+      const used = await hostedSeconds(episode.showId, ref.id);
+      const seconds = Number(file.processedDurationSeconds || file.durationSeconds || 0);
+      if (used + seconds > limit) {
+        throw new HttpError(409, `Your podcast has ${Math.round(used / 3600)} of ${limit / 3600} hours online. Unpublish or delete an older episode to make room.`);
       }
-      updates.status = b.status;
+      await ref.update({ ...updates, status: 'publishing', publishError: null, hostingSeconds: seconds });
+      publishInBackground(ref, { ...episode, ...updates }, source, show);
+      return res.status(202).json({ success: true, status: 'publishing' });
+    }
+    if (b.status === 'draft' && episode.status === 'published') {
+      // Unpublishing removes the hosted copy for good.
+      await deleteHosted(episode.hosted);
+      updates.status = 'draft';
+      updates.hosted = null;
     }
     await ref.update(updates);
     res.json({ success: true });
@@ -366,7 +394,9 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
 
   router.delete('/episodes/:id', route('Could not delete', async (req, res) => {
     const { uid } = await verifyAuth(req);
-    const { ref } = await loadEpisode(uid, req.params.id);
+    const { ref, episode } = await loadEpisode(uid, req.params.id);
+    if (episode.status === 'publishing') throw new HttpError(409, 'It is being published right now. Try again in a minute.');
+    await deleteHosted(episode.hosted);
     await ref.delete();
     res.json({ success: true });
   }));
@@ -386,7 +416,13 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
       .map((d) => {
         const e = d.data();
         const file = byId.get(e.fileId);
-        if (!file?.processedFileUrl) return null;
+        // Hosted copy first; older episodes published before hosting fall back to the cleaned file.
+        const audio = e.hosted
+          ? { url: e.hosted.url, bytes: e.hosted.bytes, seconds: e.hosted.seconds }
+          : file?.processedFileUrl
+            ? { url: file.processedFileUrl, bytes: file.processedBytes || 0, seconds: file.processedDurationSeconds || file.durationSeconds }
+            : null;
+        if (!audio) return null;
         return {
           id: d.id,
           title: e.title,
@@ -397,10 +433,10 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
           season: e.season,
           episode: e.episode,
           description: e.description,
-          summary: file.summary,
-          audioUrl: file.processedFileUrl,
-          audioBytes: file.processedBytes || 0,
-          durationSeconds: file.processedDurationSeconds || file.durationSeconds,
+          summary: file?.summary || e.summary || null,
+          audioUrl: audio.url,
+          audioBytes: audio.bytes || 0,
+          durationSeconds: audio.seconds || 0,
           pubDate: e.date ? `${e.date}T09:00:00Z` : iso(e.publishedAt),
         };
       })
@@ -412,6 +448,65 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
   });
 
   return { router, feed };
+}
+
+/** Which audio to publish: the cleaned file, or the upload itself when it was not cleaned. */
+function publishSource(file) {
+  if (!file || file.status === 'expired') throw new HttpError(410, 'This audio was already deleted from SonicPure. Upload it again to publish it.');
+  if (['uploading', 'processing', 'finalizing'].includes(file.status)) throw new HttpError(409, 'Wait for the cleaning to finish, then publish.');
+  if (file.status === 'failed') throw new HttpError(409, 'Cleaning failed for this recording. Upload it again to publish it.');
+  if (file.status === 'processed') {
+    if (file.processedIsVideo) throw new HttpError(400, 'Podcast episodes need audio. Clean it as audio to publish it.');
+    if (!file.processedFileUrl) throw new HttpError(410, 'The cleaned audio was already deleted. Upload it again to publish it.');
+    return file.processedFileUrl;
+  }
+  const url = file.extractedAudioUrl || file.originalFileUrl;
+  if (!url) throw new HttpError(410, 'This audio was already deleted from SonicPure. Upload it again to publish it.');
+  return url;
+}
+
+/**
+ * Encode and store the episode, then flip it to published. Runs after the response so long
+ * sermons do not time out; the app polls the episode. The working file is removed a day later.
+ */
+function publishInBackground(ref, episode, sourceUrl, show) {
+  (async () => {
+    try {
+      const hosted = await hostEpisode(sourceUrl, {
+        showId: episode.showId, episodeId: ref.id, title: episode.title, artist: episode.speaker || show.podcast?.author || show.name,
+      });
+      // Re-check the cap with the real length (another publish may have finished meanwhile).
+      const used = await hostedSeconds(episode.showId, ref.id);
+      if (used + hosted.seconds > hostingHours(show.plan) * 3600) {
+        await deleteHosted(hosted);
+        throw new Error('Your podcast is at its hours limit. Unpublish or delete an older episode to make room.');
+      }
+      const current = (await ref.get()).data();
+      if (!current || current.status !== 'publishing') {
+        await deleteHosted(hosted); // deleted or changed while we worked
+        return;
+      }
+      await ref.update({ status: 'published', hosted, hostingSeconds: hosted.seconds, publishedAt: episode.publishedAt || new Date(), publishError: null });
+      const soon = new Date(Date.now() + 24 * 3600 * 1000);
+      const fileRef = adminDb.collection('audioFiles').doc(episode.fileId);
+      const file = (await fileRef.get()).data();
+      if (file) {
+        const current = file.deleteAt?.toDate?.() || null;
+        await fileRef.update({ deleteAt: current && current < soon ? current : soon, originalDeleteAt: new Date() });
+      }
+      diskLog(`[shows] published ${ref.id}: ${hosted.seconds}s, ${Math.round(hosted.bytes / 1024)} KB on ${hosted.provider}`);
+    } catch (err) {
+      diskLog(`[shows] publish failed for ${ref.id}: ${formatError(err)}`);
+      await ref.update({ status: 'draft', publishError: err.message || 'Publishing failed. Try again.' }).catch(() => {});
+    }
+  })();
+}
+
+/** Episodes left half-published by a restart go back to draft so they can be published again. */
+export async function recoverPublishing() {
+  const snap = await adminDb.collection('episodes').where('status', '==', 'publishing').get();
+  for (const d of snap.docs) await d.ref.update({ status: 'draft', publishError: 'The server restarted while publishing. Please publish again.' });
+  return snap.size;
 }
 
 async function removeMember(showRef, memberUid) {

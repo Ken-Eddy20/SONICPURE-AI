@@ -54,6 +54,22 @@ One engine for every "show". When creating the account the owner picks a type, a
 - The type can be changed later in Podcast settings; the feed wording follows.
 - **Leaving:** members use "Leave this team". The owner deletes the account (Team or Podcast settings, type the name to confirm, `DELETE /api/shows`): everyone is unlinked, episodes and the feed are removed, remaining shared credits are forfeited, audio files stay with their uploaders.
 
+## Storage: what is kept and for how long
+
+SonicPure keeps no backups. Rules live in `shared/processing.js`; deletion runs in `server/lib/retention.js` every 30 minutes.
+
+| What | Kept for |
+|---|---|
+| Uncleaned original after cleaning | 24 hours (for the before/after comparison), or until the episode is published |
+| Uploads, cleaned files, Recorder saves, caption videos, meeting audio | 7 days on Free, 30 days on paid plans, counted from when they finish |
+| A working file after its episode is published | 24 hours more |
+| Transcripts, AI notes, meeting minutes (text) | Kept; they are tiny |
+| **Published podcast episodes** | While published, re-encoded to mono MP3 at 64 kbps (about 29 MB an hour). Podcast and Church plans allow **150 hours online**; unpublishing or deleting removes the file immediately |
+
+Published episodes must stay online because Apple Podcasts and most apps stream from our link. They are hosted on **Cloudflare R2** when the `R2_*` variables in `server/.env` are set (no charge for listener downloads), otherwise on Cloudinary as raw files. Publishing runs in the background (`status: publishing`), and a restart puts half-published episodes back to draft. Episodes can be published without AI cleaning (no credits).
+
+Files created before this existed have no delete date. `node scripts/backfillRetention.mjs` previews them; `--apply` schedules them (7 or 30 days from the day it runs).
+
 ## Local-language transcripts and captions (Khaya AI)
 
 - Transcribe in English, Twi (Asante and Akuapem), Fante, Ga, Ewe, Dagbani, Hausa, Nzema, Dangme, Gurene, Kusaal, Dagaare, Gonja, Pidgin, Yoruba and French via the Khaya ASR v3 API.

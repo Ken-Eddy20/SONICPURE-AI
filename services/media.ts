@@ -143,3 +143,15 @@ export function downloadWordDoc(filename: string, title: string, bodyHtml: strin
 }
 
 export { escapeHtml };
+
+/** "in 5 days", "in 3 hours", "today" for a future date. */
+export function timeUntil(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return null;
+  if (ms <= 60 * 60 * 1000) return 'within the hour';
+  const hours = Math.round(ms / 3600000);
+  if (hours < 24) return `in ${hours} hour${hours === 1 ? '' : 's'}`;
+  const days = Math.round(hours / 24);
+  return `in ${days} day${days === 1 ? '' : 's'}`;
+}

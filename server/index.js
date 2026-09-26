@@ -23,10 +23,12 @@ import { resolveAccount, billedTo, billingRefFor, getAccessibleFile, refundJob }
 import { khayaConfigured } from './lib/khaya.js';
 import transcriptsRouter from './routes/transcripts.js';
 import captionsRouter from './routes/captions.js';
-import showsRouter from './routes/shows.js';
+import showsRouter, { recoverPublishing } from './routes/shows.js';
 import meetingsRouter from './routes/meetings.js';
 import recordingsRouter from './routes/recordings.js';
 import { minutesConfigured } from './lib/claude.js';
+import { deleteAtFor, originalDeleteAt, startRetentionSweeper, workingDeleteAt } from './lib/retention.js';
+import { r2Configured } from './lib/hosting.js';
 import {
   PROFILES,
   PLAN_CREDITS,
@@ -143,7 +145,9 @@ function serializeFile(id, d, full = true) {
     showId: d.showId || null,
     error: d.error || null,
     createdAt: iso(d.createdAt),
-    expiresAt: iso(d.expiresAt),
+    expiresAt: iso(d.deleteAt),
+    originalDeleteAt: iso(d.originalDeleteAt),
+    originalRemoved: Boolean(d.originalRemoved),
   };
   if (!full) return base;
   return { ...base, transcript: d.transcript || null, summary: d.summary || null, social: d.social || null };
@@ -224,7 +228,8 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
       durationSeconds,
       status: 'uploaded',
       createdAt: now,
-      expiresAt: new Date(now.getTime() + 86400000),
+      // Deleted automatically if it is never cleaned or published (no backups).
+      deleteAt: workingDeleteAt(account.plan, now),
     });
 
     res.json({
@@ -416,6 +421,9 @@ async function finalizeJob(fileRef, result) {
       summary: insights.summary,
       social: insights.social,
       completedAt: new Date(),
+      // Keep the original briefly for before/after, the cleaned file for the plan's window.
+      originalDeleteAt: originalDeleteAt(),
+      deleteAt: await deleteAtFor(claimed.userId),
     });
     await adminDb.collection('usageLogs').add({
       userId: claimed.userId,
@@ -762,6 +770,9 @@ app.listen(PORT, () => {
     diskLog('WARNING: PAYSTACK_SECRET_KEY not set - payments will not work');
   }
   recoverInterruptedJobs().catch((err) => diskLog('[Recovery] failed: ' + formatError(err)));
+  startRetentionSweeper();
+  recoverPublishing().then((n) => n && diskLog(`[Recovery] ${n} episodes were mid-publish and went back to draft`)).catch(() => {});
+  diskLog(r2Configured() ? '[Startup] Published episodes are hosted on Cloudflare R2' : 'WARNING: R2 not configured - published episodes are hosted on Cloudinary (listeners use Cloudinary bandwidth)');
   if (process.env.CLEANVOICE_API_KEY) {
     cleanvoiceCredits().then((credits) => {
       if (credits === null) diskLog('WARNING: could not check the Cleanvoice account balance');

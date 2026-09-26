@@ -6,7 +6,7 @@ import {
 } from '../../services/audioEdit';
 import { EMPTY_METADATA, type AudioMetadata } from '../../services/mp3Export';
 import { deleteSession, listSessions, loadSession, type SessionInfo } from '../../services/recordingStore';
-import { attachmentUrl, formatBytes, formatDuration, probeDuration } from '../../services/media';
+import { attachmentUrl, formatBytes, formatDuration, probeDuration, timeUntil } from '../../services/media';
 import LiveRecorder from './LiveRecorder';
 import AudioEditor, { EditorLoading } from './AudioEditor';
 import FinishPanel from './FinishPanel';
@@ -314,7 +314,7 @@ function LibraryItem({ rec, onDelete }: { rec: SavedRecording; onDelete: () => v
         <div className="min-w-0 flex-1">
           <p className="truncate font-semibold">{rec.title}</p>
           <p className="truncate text-xs text-muted">
-            {[rec.meta.artist, rec.meta.album, formatDuration(rec.durationSeconds), formatBytes(rec.bytes)].filter(Boolean).join(' · ')}
+            {[rec.meta.artist, rec.meta.album, formatDuration(rec.durationSeconds), formatBytes(rec.bytes), rec.deleteAt && `deletes ${timeUntil(rec.deleteAt)}`].filter(Boolean).join(' · ')}
           </p>
           <audio src={rec.audioUrl} controls preload="none" className="mt-2 h-8 w-full max-w-sm" />
         </div>

@@ -3,7 +3,8 @@ import { auth } from '../firebase';
 export const API_BASE: string = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
 export type Plan = 'free' | 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church';
-export type JobStatus = 'uploading' | 'uploaded' | 'processing' | 'processed' | 'failed';
+/** `expired`: the audio was deleted after the plan's keep window (text such as notes stays). */
+export type JobStatus = 'uploading' | 'uploaded' | 'processing' | 'processed' | 'failed' | 'expired';
 
 export interface JobOptions {
   exportFormat: 'mp3' | 'wav' | 'flac' | 'm4a';
@@ -65,7 +66,11 @@ export interface AudioJob {
   hasNotes: boolean;
   error: string | null;
   createdAt: string | null;
+  /** When SonicPure deletes this file for good (no backups). */
   expiresAt: string | null;
+  /** When the uncleaned original is deleted (kept briefly for before/after). */
+  originalDeleteAt?: string | null;
+  originalRemoved?: boolean;
   transcript?: { paragraphs: TranscriptParagraph[]; truncated: boolean } | null;
   summary?: JobSummary | null;
   social?: JobSocial | null;
@@ -186,7 +191,7 @@ export interface CaptionJob {
   style: 'classic' | 'boxed' | 'social';
   position: 'bottom' | 'middle' | 'top';
   size: 'small' | 'medium' | 'large';
-  status: 'queued' | 'processing' | 'done' | 'failed';
+  status: 'queued' | 'processing' | 'done' | 'failed' | 'expired';
   stage: string | null;
   percent: number | null;
   outputUrl: string | null;
@@ -247,6 +252,9 @@ export interface Show {
   role: 'owner' | 'editor';
   podcast: PodcastSettings;
   feedUrl: string;
+  /** Published audio online now, against the plan's limit. */
+  hostingUsedSeconds: number;
+  hostingLimitHours: number;
 }
 
 /** One of the podcast or church accounts the user belongs to. */
@@ -278,15 +286,21 @@ export interface Episode {
   episode: number | null;
   date: string;
   description: string;
-  status: 'draft' | 'published';
+  status: 'draft' | 'publishing' | 'published';
+  publishError: string | null;
   createdAt: string | null;
   publishedAt: string | null;
+  /** The copy podcast apps play (64 kbps mono), kept while the episode is published. */
+  hosted: { url: string; seconds: number; bytes: number } | null;
   file: {
     status: JobStatus;
     stage: string | null;
     percent: number | null;
     durationSeconds: number;
     processedFileUrl: string | null;
+    originalFileUrl: string | null;
+    cleaned: boolean;
+    deleteAt: string | null;
     summaryTitle: string | null;
     error: string | null;
   } | null;
@@ -452,6 +466,7 @@ export interface SavedRecording {
   bytes: number;
   durationSeconds: number;
   createdAt: string | null;
+  deleteAt: string | null;
 }
 
 export const listRecordings = () => apiFetch<{ recordings: SavedRecording[]; limit: number | null }>('/api/recordings');

@@ -18,6 +18,7 @@ import { startCleanvoiceJob, checkCleanvoiceJob, speakerSegments } from '../lib/
 import { transcribeChunk, translateText, mapLimit, khayaConfigured } from '../lib/khaya.js';
 import { generateMinutes, minutesConfigured } from '../lib/claude.js';
 import { probe, extractSpeechAudio, speechChunks, cleanupDir } from '../lib/media.js';
+import { deleteAtFor } from '../lib/retention.js';
 import {
   TRANSCRIBE_LANGUAGES,
   MEETING_MAX_BYTES,
@@ -272,6 +273,8 @@ async function processMeeting(ref) {
       minutes,
       minutesError,
       completedAt: new Date(),
+      // The audio goes after the plan window; the transcript and minutes stay.
+      audioDeleteAt: await deleteAtFor(meeting.userId),
     });
     diskLog(`[Meeting] ${id} done: ${segments.length} segments, ${Math.round(info.duration / 60)} min`);
   } catch (err) {

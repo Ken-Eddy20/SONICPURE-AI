@@ -19,12 +19,18 @@ import {
   type Show,
 } from '../../services/api';
 import { EPISODE_FEATURE, EPISODE_OPTIONS, estimateCredits, showType } from '../../shared/processing.js';
-import { attachmentUrl, formatBytes, formatDuration, probeDuration } from '../../services/media';
+import { attachmentUrl, formatBytes, formatDuration, probeDuration, timeUntil } from '../../services/media';
 import { Notes } from '../studio/JobDetail';
 import TranscriptsPanel from '../studio/TranscriptsPanel';
 
 const POLL_MS = 5000;
-const isRunning = (s?: string) => s === 'uploading' || s === 'uploaded' || s === 'processing';
+const isRunning = (s?: string) => s === 'uploading' || s === 'processing';
+/** Something is still happening to this episode (cleaning or publishing). */
+const isBusy = (e: Episode) => isRunning(e.file?.status) || e.status === 'publishing';
+/** Can go on the podcast: cleaned, or uploaded and not being cleaned. */
+const isPublishable = (e: Episode) => e.file?.status === 'processed' || (e.file?.status === 'uploaded' && !e.file.cleaned);
+/** What to play: the podcast copy, else the cleaned file, else the upload itself. */
+const playUrl = (e: Episode) => e.hosted?.url || e.file?.processedFileUrl || (e.file?.status === 'uploaded' ? e.file.originalFileUrl : null);
 const input = 'mt-1.5 w-full rounded-xl border border-line bg-surface px-3.5 py-2.5 text-sm outline-none focus:border-accent';
 type Labels = ReturnType<typeof showType>;
 
@@ -52,7 +58,7 @@ export default function EpisodesTab({ show, onActivate, onChanged }: Props) {
     load();
   }, [load]);
 
-  const anyRunning = episodes?.some((e) => isRunning(e.file?.status));
+  const anyRunning = episodes?.some(isBusy);
   useEffect(() => {
     if (!anyRunning || mode.kind !== 'list') return;
     const timer = setInterval(load, POLL_MS);
@@ -94,6 +100,7 @@ export default function EpisodesTab({ show, onActivate, onChanged }: Props) {
           <h2 className="text-xl font-extrabold tracking-tight">{t.items}</h2>
           <p className="text-sm text-muted">Everything your team uploads, newest first.</p>
         </div>
+        {show.hostingLimitHours > 0 && <HostingMeter show={show} />}
         {show.active ? (
           <button type="button" onClick={() => setMode({ kind: 'new' })} className="btn-primary px-5 py-2.5">
             <Plus className="h-4 w-4" /> New {t.item.toLowerCase()}
@@ -142,7 +149,7 @@ export default function EpisodesTab({ show, onActivate, onChanged }: Props) {
                         .filter(Boolean)
                         .join(' · ')}
                     </p>
-                    {isRunning(e.file?.status) && (
+                    {isBusy(e) && (
                       <div className="mt-2 h-1 overflow-hidden rounded-full bg-line">
                         <div className="h-full rounded-full bg-accent transition-[width] duration-700" style={{ width: `${Math.max(3, e.file?.percent ?? 3)}%` }} />
                       </div>
@@ -159,18 +166,37 @@ export default function EpisodesTab({ show, onActivate, onChanged }: Props) {
   );
 }
 
+/** Hours of published audio online, against the plan's limit. */
+function HostingMeter({ show }: { show: Show }) {
+  const used = show.hostingUsedSeconds / 3600;
+  const pct = Math.min(100, (used / show.hostingLimitHours) * 100);
+  return (
+    <div className="w-full sm:order-last" title="Only published episodes are kept. Everything else is deleted automatically.">
+      <div className="flex justify-between text-xs font-semibold">
+        <span className="text-muted">On your podcast</span>
+        <span className={pct >= 90 ? 'text-danger' : 'text-ink'}>{used < 10 ? used.toFixed(1) : Math.round(used)} of {show.hostingLimitHours} hours</span>
+      </div>
+      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line">
+        <div className={`h-full rounded-full ${pct >= 90 ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${Math.max(1, pct)}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function StatusIcon({ episode }: { episode: Episode }) {
   const st = episode.file?.status;
-  if (isRunning(st)) return <Loader2 className="h-5 w-5 shrink-0 animate-spin text-accent" />;
+  if (isBusy(episode)) return <Loader2 className="h-5 w-5 shrink-0 animate-spin text-accent" />;
   if (st === 'failed') return <XCircle className="h-5 w-5 shrink-0 text-danger" />;
   return <CheckCircle2 className="h-5 w-5 shrink-0 text-accent" />;
 }
 
 function StatusChip({ episode }: { episode: Episode }) {
   const st = episode.file?.status;
+  if (episode.status === 'publishing') return <span className="chip shrink-0">Publishing</span>;
   if (isRunning(st)) return <span className="chip shrink-0">{episode.file?.stage || 'Cleaning'}</span>;
-  if (st === 'failed') return <span className="chip shrink-0 border-danger/30 text-danger">Failed</span>;
   if (episode.status === 'published') return <span className="chip shrink-0 border-accent/30 bg-accent-soft text-accent"><Radio className="h-3 w-3" /> On podcast</span>;
+  if (st === 'failed') return <span className="chip shrink-0 border-danger/30 text-danger">Failed</span>;
+  if (st === 'expired') return <span className="chip shrink-0 text-faint">Audio deleted</span>;
   return <span className="chip shrink-0">Draft</span>;
 }
 
@@ -232,6 +258,7 @@ function NewEpisode({ show, t, nextNumber, onCancel, onCreated }: { show: Show; 
   const [file, setFile] = useState<File | null>(null);
   const [duration, setDuration] = useState<number | null>(null);
   const [keepMusic, setKeepMusic] = useState(true);
+  const [clean, setClean] = useState(true);
   const [progress, setProgress] = useState<{ label: string; percent: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -243,7 +270,7 @@ function NewEpisode({ show, t, nextNumber, onCancel, onCreated }: { show: Show; 
     if (!fields.title) setFields((x) => ({ ...x, title: f.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ') }));
   };
 
-  const cost = duration ? estimateCredits(EPISODE_FEATURE, duration, EPISODE_OPTIONS) : null;
+  const cost = !clean ? 0 : duration ? estimateCredits(EPISODE_FEATURE, duration, EPISODE_OPTIONS) : null;
   const short = cost !== null && cost > show.credits;
 
   const submit = async () => {
@@ -252,8 +279,10 @@ function NewEpisode({ show, t, nextNumber, onCancel, onCreated }: { show: Show; 
     try {
       setProgress({ label: 'Uploading', percent: 0 });
       const uploaded = await uploadMedia(file, duration, (p) => setProgress({ label: 'Uploading', percent: p }));
-      setProgress({ label: 'Starting clean-up', percent: 100 });
-      await startProcessing(uploaded.fileId, EPISODE_FEATURE, { ...EPISODE_OPTIONS, keepMusic } as JobOptions);
+      if (clean) {
+        setProgress({ label: 'Starting clean-up', percent: 100 });
+        await startProcessing(uploaded.fileId, EPISODE_FEATURE, { ...EPISODE_OPTIONS, keepMusic } as JobOptions);
+      }
       const created = await createEpisode(uploaded.fileId, fields);
       onCreated(created.id);
     } catch (err) {
@@ -305,16 +334,24 @@ function NewEpisode({ show, t, nextNumber, onCancel, onCreated }: { show: Show; 
 
           <label className="flex items-center justify-between gap-3 rounded-2xl border border-line px-4 py-3">
             <span>
+              <span className="block text-sm font-semibold">Clean with AI</span>
+              <span className="block text-xs text-muted">{clean ? 'Noise removed, sound levelled, notes written. Uses credits.' : 'Publish it exactly as recorded. No credits used.'}</span>
+            </span>
+            <input type="checkbox" checked={clean} onChange={(e) => setClean(e.target.checked)} className="h-5 w-5 accent-[var(--accent)]" />
+          </label>
+
+          <label className={`flex items-center justify-between gap-3 rounded-2xl border border-line px-4 py-3 ${clean ? '' : 'opacity-50'}`}>
+            <span>
               <span className="block text-sm font-semibold">{t.keepMusicLabel}</span>
               <span className="block text-xs text-muted">Music stays untouched while speech is cleaned</span>
             </span>
-            <input type="checkbox" checked={keepMusic} onChange={(e) => setKeepMusic(e.target.checked)} className="h-5 w-5 accent-[var(--accent)]" />
+            <input type="checkbox" checked={keepMusic} disabled={!clean} onChange={(e) => setKeepMusic(e.target.checked)} className="h-5 w-5 accent-[var(--accent)]" />
           </label>
 
           <div className="rounded-2xl bg-sunken p-4 text-sm">
             {cost !== null ? (
               <>
-                <p><span className="font-bold">{cost} credits</span> <span className="text-muted">from {show.credits.toLocaleString()} shared credits</span></p>
+                <p>{cost ? <><span className="font-bold">{cost} credits</span> <span className="text-muted">from {show.credits.toLocaleString()} shared credits</span></> : <span className="font-bold">No credits used</span>}</p>
                 {short && <p className="mt-1 text-xs font-semibold text-danger">Not enough shared credits for this recording.</p>}
               </>
             ) : (
@@ -336,7 +373,7 @@ function NewEpisode({ show, t, nextNumber, onCancel, onCreated }: { show: Show; 
           {error && <p className="rounded-2xl bg-danger-soft px-4 py-3 text-sm text-danger">{error}</p>}
 
           <button type="button" onClick={submit} disabled={!file || !fields.title.trim() || short || progress !== null} className="btn-primary w-full py-3.5">
-            Upload and clean {t.item.toLowerCase()}
+            {clean ? `Upload and clean ${t.item.toLowerCase()}` : `Upload ${t.item.toLowerCase()}`}
           </button>
         </div>
       </div>
@@ -374,10 +411,10 @@ function EpisodeDetail({ id, t, onBack }: { id: string; t: Labels; onBack: () =>
 
   // The status call also advances the cleaning job on the server.
   useEffect(() => {
-    if (!job || !isRunning(job.status)) return;
+    if (!episode || !isBusy(episode)) return;
     const timer = setInterval(load, POLL_MS);
     return () => clearInterval(timer);
-  }, [job, load]);
+  }, [episode, load]);
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -402,7 +439,8 @@ function EpisodeDetail({ id, t, onBack }: { id: string; t: Labels; onBack: () =>
     );
   }
 
-  const ready = job?.status === 'processed';
+  const ready = isPublishable(episode) || episode.status === 'published' || episode.status === 'publishing';
+  const audioUrl = playUrl(episode);
   const meta = [
     episode.season && `Season ${episode.season}`,
     episode.episode && `Episode ${episode.episode}`,
@@ -480,29 +518,44 @@ function EpisodeDetail({ id, t, onBack }: { id: string; t: Labels; onBack: () =>
           {job?.status === 'failed' && (
             <p className="rounded-3xl bg-danger-soft p-5 text-sm text-danger">{job.error || 'Cleaning failed.'} The credits were refunded.</p>
           )}
-          {ready && job?.processedFileUrl && (
+          {episode.file?.status === 'expired' && episode.status !== 'published' && (
+            <p className="rounded-3xl bg-sunken p-5 text-sm text-muted">This audio was deleted after the keep window (SonicPure keeps no backups). Upload it again to publish it.</p>
+          )}
+          {episode.publishError && episode.status === 'draft' && (
+            <p className="mb-4 rounded-2xl bg-danger-soft px-4 py-3 text-sm text-danger">{episode.publishError}</p>
+          )}
+          {ready && audioUrl && (
             <div className="space-y-5">
-              <audio src={job.processedFileUrl} controls preload="metadata" className="w-full" />
+              <audio src={audioUrl} controls preload="metadata" className="w-full" />
               <div className="flex flex-col gap-3 rounded-3xl border border-line p-5 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="flex items-center gap-2 font-bold">
                     {episode.status === 'published' ? <Globe className="h-4 w-4 text-accent" /> : <Radio className="h-4 w-4 text-muted" />}
                     {episode.status === 'published' ? 'Published on your podcast' : 'Not on your podcast yet'}
                   </p>
-                  <p className="mt-1 text-xs text-muted">Published {t.items.toLowerCase()} appear in your feed within minutes. Spotify and Apple check a few times a day.</p>
+                  <p className="mt-1 text-xs text-muted">
+                    {episode.status === 'published' && episode.hosted
+                      ? `Kept online as a ${formatBytes(episode.hosted.bytes)} podcast copy while it is published. Unpublishing deletes it.`
+                      : episode.status === 'publishing'
+                        ? 'Preparing the podcast copy. This takes about a minute per hour of audio.'
+                        : `Published ${t.items.toLowerCase()} appear on Spotify and Apple within a few hours.${episode.file?.deleteAt ? ` Otherwise this audio is deleted ${timeUntil(episode.file.deleteAt)}.` : ''}`}
+                  </p>
                 </div>
                 <div className="flex gap-2">
-                  <a href={attachmentUrl(job.processedFileUrl, episode.title)} className="btn-ghost py-2.5">
+                  <a href={attachmentUrl(audioUrl, episode.title)} className="btn-ghost py-2.5">
                     <Download className="h-4 w-4" /> MP3
                   </a>
                   <button
                     type="button"
-                    disabled={busy}
-                    onClick={() => act(() => updateEpisode(episode.id, { status: episode.status === 'published' ? 'draft' : 'published' }))}
+                    disabled={busy || episode.status === 'publishing'}
+                    onClick={() => {
+                      if (episode.status === 'published' && !window.confirm('Unpublish? The podcast copy is deleted and listeners can no longer play it.')) return;
+                      act(() => updateEpisode(episode.id, { status: episode.status === 'published' ? 'draft' : 'published' }));
+                    }}
                     className={episode.status === 'published' ? 'btn-ghost py-2.5' : 'btn-primary py-2.5'}
                   >
-                    {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {episode.status === 'published' ? 'Unpublish' : 'Publish to podcast'}
+                    {(busy || episode.status === 'publishing') && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {episode.status === 'published' ? 'Unpublish' : episode.status === 'publishing' ? 'Publishing…' : 'Publish to podcast'}
                   </button>
                 </div>
               </div>
@@ -512,7 +565,7 @@ function EpisodeDetail({ id, t, onBack }: { id: string; t: Labels; onBack: () =>
         </div>
       </div>
 
-      {ready && job && (
+      {job?.status === 'processed' && (
         <>
           {job.hasNotes && (
             <div className="card p-5 sm:p-7">

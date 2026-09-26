@@ -1,6 +1,6 @@
-import { CheckCircle2, Loader2, XCircle, Inbox } from 'lucide-react';
+import { CheckCircle2, Clock, Loader2, XCircle, Inbox } from 'lucide-react';
 import { PROFILES } from '../../shared/processing.js';
-import { formatDuration, timeAgo } from '../../services/media';
+import { formatDuration, timeAgo, timeUntil } from '../../services/media';
 import type { ClientJob } from './JobDetail';
 
 interface LibraryProps {
@@ -52,6 +52,8 @@ export default function Library({ jobs, loading, selectedId, onSelect }: Library
                       <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
                     ) : job.status === 'failed' ? (
                       <XCircle className="h-4 w-4 shrink-0 text-danger" />
+                    ) : job.status === 'expired' ? (
+                      <Clock className="h-4 w-4 shrink-0 text-faint" />
                     ) : (
                       <CheckCircle2 className="h-4 w-4 shrink-0 text-accent" />
                     )}
@@ -62,7 +64,9 @@ export default function Library({ jobs, loading, selectedId, onSelect }: Library
                           ? job.status === 'uploading'
                             ? `Uploading ${percent}%`
                             : job.stage || 'Starting'
-                          : [job.feature && PROFILES[job.feature]?.name, job.durationSeconds ? formatDuration(job.durationSeconds) : null, timeAgo(job.createdAt)]
+                          : job.status === 'expired'
+                            ? 'Audio deleted · notes kept'
+                            : [job.feature && PROFILES[job.feature]?.name, job.durationSeconds ? formatDuration(job.durationSeconds) : null, job.expiresAt ? `deletes ${timeUntil(job.expiresAt)}` : timeAgo(job.createdAt)]
                               .filter(Boolean)
                               .join(' · ')}
                       </p>

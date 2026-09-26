@@ -467,7 +467,7 @@ function CaptionResult({ job: initial, fileName }: { job: CaptionJob; fileName: 
       <div className="flex items-center justify-between text-sm">
         <span className="font-semibold">{CAPTION_STYLES[job.style]?.name} captions · {job.position}</span>
         <span className="text-xs text-muted">
-          {running(job.status) ? `${job.stage || 'Working'} · ${job.percent ?? 0}%` : job.status === 'failed' ? 'Failed · refunded' : 'Ready'}
+          {running(job.status) ? `${job.stage || 'Working'} · ${job.percent ?? 0}%` : job.status === 'failed' ? 'Failed · refunded' : job.status === 'expired' ? 'Video deleted' : 'Ready'}
         </span>
       </div>
       {running(job.status) && (

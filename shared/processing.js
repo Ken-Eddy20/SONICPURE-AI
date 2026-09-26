@@ -407,6 +407,26 @@ export const EPISODE_OPTIONS = {
 // ─── Meetings ────────────────────────────────────────────────────
 
 /** Longest meeting recording each plan can transcribe, in minutes. */
+// ─── Storage: nothing is kept for long except published episodes ─────────
+
+/**
+ * Working files (uploads, cleaned results, Recorder saves, caption videos, meeting audio)
+ * are deleted automatically this many days after they are finished. No backups.
+ */
+export const WORKING_FILE_DAYS = { free: 7, paid: 30 };
+export const workingFileDays = (plan) => (!plan || plan === 'free' ? WORKING_FILE_DAYS.free : WORKING_FILE_DAYS.paid);
+
+/** The uncleaned original is kept this long after cleaning, for the before/after comparison. */
+export const ORIGINAL_KEEP_HOURS = 24;
+
+/**
+ * Published podcast episodes are the only files kept long-term: re-encoded to mono MP3 at
+ * HOSTED_KBPS (about 29 MB per hour) and capped per plan in hours online.
+ */
+export const HOSTED_KBPS = 64;
+export const HOSTING_HOURS = { podcast: 150, church: 150 };
+export const hostingHours = (plan) => HOSTING_HOURS[plan] || 0;
+
 export const MEETING_MAX_MINUTES = { free: 60, payg: 180, pro: 240, audio_master: 480, podcast: 240, church: 240 };
 /** Largest meeting file accepted (audio or video). */
 export const MEETING_MAX_BYTES = 3 * 1024 * 1024 * 1024;

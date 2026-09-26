@@ -11,6 +11,7 @@ import { HttpError, route, verifyAuth, diskLog, formatError, iso } from '../lib/
 import { chargeAndCreate, getAccessibleFile, refundJob } from '../lib/accounts.js';
 import { makeWorkDir, cleanupDir, downloadTo, probe, burnCaptions } from '../lib/media.js';
 import { buildAss } from '../lib/captions.js';
+import { deleteAtFor } from '../lib/retention.js';
 import {
   CAPTION_MAX_MINUTES,
   CAPTION_POSITIONS,
@@ -83,6 +84,7 @@ async function runCaptions(ref) {
       outputUrl: saved.secure_url,
       outputPublicId: saved.public_id,
       completedAt: new Date(),
+      deleteAt: await deleteAtFor(file.userId),
     });
     diskLog(`[Captions] ${ref.id} done`);
   } catch (err) {

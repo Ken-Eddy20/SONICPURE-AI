@@ -10,6 +10,7 @@ import { cloudinary } from '../../lib/cloudinary.js';
 import { HttpError, route, verifyAuth, iso, diskLog } from '../lib/http.js';
 import { resolveAccount } from '../lib/accounts.js';
 import { FREE_RECORDING_LIMIT } from '../../shared/processing.js';
+import { workingDeleteAt } from '../lib/retention.js';
 
 const recordings = () => adminDb.collection('recordings');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024, files: 2 } });
@@ -43,6 +44,7 @@ function serialize(id, r) {
     bytes: r.bytes || 0,
     durationSeconds: r.durationSeconds || 0,
     createdAt: iso(r.createdAt),
+    deleteAt: iso(r.deleteAt),
   };
 }
 
@@ -111,6 +113,8 @@ export default function recordingsRouter({ limiter }) {
         bytes: audio.size,
         durationSeconds,
         createdAt: new Date(),
+        // Saves are temporary: download or share them before this date.
+        deleteAt: workingDeleteAt(account.plan),
       });
       diskLog(`[Recorder] saved ${ref.id} (${Math.round(durationSeconds)}s) for ${uid}`);
       res.status(201).json(serialize(ref.id, (await ref.get()).data()));
@@ -171,7 +175,7 @@ export default function recordingsRouter({ limiter }) {
       recordingId: snap.id,
       status: 'uploaded',
       createdAt: now,
-      expiresAt: new Date(now.getTime() + 86400000),
+      deleteAt: workingDeleteAt(account.plan, now),
     });
     res.status(201).json({ fileId: fileRef.id, durationSeconds: r.durationSeconds || 0 });
   }));

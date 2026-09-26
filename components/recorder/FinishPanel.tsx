@@ -45,6 +45,8 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
   const cacheRef = useRef<{ key: string; blob: Blob } | null>(null);
   const coverInput = useRef<HTMLInputElement>(null);
   const paid = plan !== 'free';
+  /** Publish straight from the recorder: cleaned first (credits) or exactly as edited (no credits). */
+  const [cleanFirst, setCleanFirst] = useState(true);
 
   const set = (key: keyof AudioMetadata) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const value = e.target.value;
@@ -153,7 +155,7 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
       }
       const rec = await ensureSaved();
       const { fileId } = await recordingToStudio(rec.id);
-      await startProcessing(fileId, EPISODE_FEATURE, EPISODE_OPTIONS as JobOptions);
+      if (cleanFirst) await startProcessing(fileId, EPISODE_FEATURE, EPISODE_OPTIONS as JobOptions);
       const t = showLabels(showType);
       const track = parseInt(meta.track, 10);
       await createEpisode(fileId, {
@@ -167,7 +169,9 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
         date: new Date().toISOString().slice(0, 10),
         description: meta.comment,
       });
-      return `Sent to your podcast. It is being cleaned now; publish it from Podcast → ${t.items} when it is ready.`;
+      return cleanFirst
+        ? `Sent to your podcast. It is being cleaned now; publish it from Podcast → ${t.items} when it is ready.`
+        : `Added to Podcast → ${t.items}. Open it there and press Publish.`;
     });
 
   const pickCover = async (file?: File) => {
@@ -310,13 +314,21 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
             <PaidAction
               icon={<Podcast className="h-4 w-4" />}
               title="Publish to Spotify & Apple Podcasts"
-              text={showType === 'church' ? 'Cleans it, writes the sermon notes and adds it to your church podcast.' : 'Cleans it, writes the show notes and adds it to your podcast.'}
+              text={cleanFirst
+                ? showType === 'church' ? 'Cleans it, writes the sermon notes and adds it to your church podcast.' : 'Cleans it, writes the show notes and adds it to your podcast.'
+                : 'Adds it to your podcast exactly as you edited it. No credits used.'}
               locked={!showActive}
               lockedText="Podcast or Church plan"
               busy={busy === 'publish'}
               disabled={working}
               onClick={publish}
             />
+            {showActive && (
+              <label className="flex items-center gap-2 px-1 text-xs text-muted">
+                <input type="checkbox" checked={cleanFirst} onChange={(e) => setCleanFirst(e.target.checked)} className="h-4 w-4 accent-[var(--accent)]" />
+                Clean with AI before publishing (uses credits)
+              </label>
+            )}
           </div>
         </div>
       </div>

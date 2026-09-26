@@ -126,3 +126,20 @@ export async function extractSpeechAudio(inputPath, dir, onTime) {
   );
   return path.join(dir, 'speech.mp3');
 }
+
+/**
+ * Re-encode an episode for podcast hosting: mono MP3 at `kbps`, 44.1 kHz, with a title tag.
+ * Speech sounds the same to listeners at 64 kbps mono and takes about half the space of 128 kbps stereo.
+ */
+export async function encodeHostedMp3(inputPath, dir, { kbps, title = '', artist = '' }) {
+  await runFfmpeg(
+    [
+      '-i', path.basename(inputPath), '-vn', '-map_metadata', '-1',
+      '-ac', '1', '-ar', '44100', '-b:a', `${kbps}k`,
+      '-metadata', `title=${title}`, '-metadata', `artist=${artist}`, '-id3v2_version', '3',
+      'hosted.mp3',
+    ],
+    { cwd: dir },
+  );
+  return path.join(dir, 'hosted.mp3');
+}
