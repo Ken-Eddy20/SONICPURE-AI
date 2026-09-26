@@ -1,4 +1,4 @@
-export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church';
+export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church' | 'team_topup';
 
 export interface TierDetails {
   name: string;
@@ -11,7 +11,7 @@ export interface TierDetails {
   credits: string;
 }
 
-export const TIER_DETAILS: Record<SubscriptionTier, TierDetails> = {
+export const TIER_DETAILS = {
   payg: {
     name: 'Pay As You Go',
     price: 'From $1',
@@ -96,7 +96,25 @@ export const TIER_DETAILS: Record<SubscriptionTier, TierDetails> = {
     ],
     cta: 'Get the Church plan',
   },
+} as Record<SubscriptionTier, TierDetails>;
+
+/** Not a plan: extra credits for a team's shared pool (see TEAM_TOPUP_* in shared/processing.js). */
+const TEAM_TOPUP_DETAILS: TierDetails = {
+  name: 'Team top-up',
+  price: '$10',
+  priceAmount: 10,
+  period: 'per 350 credits',
+  credits: '350 credits per pack',
+  description: 'Extra credits for your church or podcast team. They go into the shared pool and never expire.',
+  features: [
+    'Anyone on the team can buy them',
+    'Added to the shared pool straight away',
+    'Your plan and renewal date stay the same',
+    'About 175 minutes of AI cleaning per pack',
+  ],
+  cta: 'Top up team credits',
 };
+TIER_DETAILS.team_topup = TEAM_TOPUP_DETAILS;
 
 export const FREE_PLAN = {
   name: 'Free',

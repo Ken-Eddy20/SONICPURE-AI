@@ -48,8 +48,8 @@ export default function Pricing({ currentPlan, onChoose, onStartFree }: PricingP
 }
 
 const TEAM_PLANS: { tier: 'podcast' | 'church'; icon: typeof Radio; topUp: string }[] = [
-  { tier: 'podcast', icon: Radio, topUp: 'Add 1,500 credits' },
-  { tier: 'church', icon: Church, topUp: 'Add 1,500 credits' },
+  { tier: 'podcast', icon: Radio, topUp: 'Renew plan (+1,500 credits)' },
+  { tier: 'church', icon: Church, topUp: 'Renew plan (+1,500 credits)' },
 ];
 
 /** Podcast and Church plans: shared credits for a team plus a podcast feed. */
@@ -58,7 +58,7 @@ function TeamPlans({ currentPlan, onChoose }: { currentPlan?: Plan | null; onCho
     <div className="rounded-3xl border border-line bg-ink p-5 text-bg sm:p-7 md:col-span-2 xl:col-span-4">
       <p className="eyebrow text-accent">For podcasters and churches</p>
       <h3 className="mt-1 text-2xl font-extrabold tracking-tight">Record, clean and publish to Spotify and Apple Podcasts</h3>
-      <p className="mt-1 text-sm opacity-70">Same package, same price. Recording and editing in the Podcast tab are free on every plan; these add AI cleaning, 1,500 shared credits for up to 5 people and your own podcast feed. Shorter episodes mean your credits go further.</p>
+      <p className="mt-1 text-sm opacity-70">Same package, same price. Recording and editing in the Podcast tab are free on every plan; these add AI cleaning, 1,500 shared credits for up to 5 people and your own podcast feed. Shorter episodes mean your credits go further. Run out early? Anyone on the team can top up 350 credits for $10.</p>
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
         {TEAM_PLANS.map(({ tier, icon: Icon, topUp }) => {
           const t = TIER_DETAILS[tier];
@@ -87,6 +87,11 @@ function TeamPlans({ currentPlan, onChoose }: { currentPlan?: Plan | null; onCho
               <button type="button" onClick={() => onChoose(tier)} className="btn-primary mt-6 w-full py-3">
                 {current ? topUp : t.cta}
               </button>
+              {current && (
+                <button type="button" onClick={() => onChoose('team_topup')} className="mt-2 text-sm font-semibold text-accent hover:underline">
+                  Need less? Top up 350 credits for $10
+                </button>
+              )}
             </div>
           );
         })}

@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, Loader2, Lock, ShieldCheck } from 'lucide-react';
 import { TIER_DETAILS, type SubscriptionTier } from '../constants/subscriptionPlans';
 import { apiFetch, ApiError } from '../services/api';
-import { paygPriceUsd } from '../shared/processing.js';
+import { paygPriceUsd, teamTopupPriceUsd } from '../shared/processing.js';
 import Logo from './ui/Logo';
 
 interface PaystackCallbacks {
@@ -34,8 +34,10 @@ function formatUsd(amount: number) {
 
 export default function PaymentPage({ tier, customCredits, userEmail, resumeReference, onBack }: PaymentPageProps) {
   const details = TIER_DETAILS[tier];
-  const isPayg = tier === 'payg';
-  const usd = isPayg ? paygPriceUsd(customCredits || 0) : details.priceAmount;
+  const isTeam = tier === 'team_topup';
+  /** Buyer chooses the amount (Pay As You Go credits or team top-up packs). */
+  const isPayg = tier === 'payg' || isTeam;
+  const usd = isTeam ? teamTopupPriceUsd(customCredits || 0) : isPayg ? paygPriceUsd(customCredits || 0) : details.priceAmount;
   const creditsLabel = isPayg ? `${(customCredits || 0).toLocaleString()} credits` : details.credits;
 
   const [busy, setBusy] = useState(false);
@@ -111,7 +113,7 @@ export default function PaymentPage({ tier, customCredits, userEmail, resumeRefe
           </span>
           <h1 className="mt-6 text-2xl font-extrabold tracking-tight">Payment confirmed</h1>
           <p className="mt-2 text-muted">
-            {creditsAdded.toLocaleString()} credits are now in your account
+            {creditsAdded.toLocaleString()} credits are now in {isTeam ? "your team's shared pool" : 'your account'}
             {isPayg ? '.' : `, and you're on ${details.name}.`}
           </p>
           <button type="button" onClick={onBack} className="btn-primary mt-8 w-full py-3.5">

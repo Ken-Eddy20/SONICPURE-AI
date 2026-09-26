@@ -30,6 +30,10 @@ import { minutesConfigured } from './lib/claude.js';
 import { deleteAtFor, originalDeleteAt, startRetentionSweeper, workingDeleteAt } from './lib/retention.js';
 import { r2Configured } from './lib/hosting.js';
 import {
+  isShowPlan,
+  TEAM_TOPUP_PACK_CREDITS,
+  TEAM_TOPUP_MAX_PACKS,
+  teamTopupPriceUsd,
   PROFILES,
   PLAN_CREDITS,
   PAYG_CREDITS_PER_USD,
@@ -539,7 +543,7 @@ app.get('/api/paystack/rate', async (req, res) => {
 // ─── Paystack ────────────────────────────────────────────────────
 
 const PAYSTACK_BASE = 'https://api.paystack.co';
-const PAID_TIERS = ['payg', 'pro', 'audio_master', 'podcast', 'church'];
+const PAID_TIERS = ['payg', 'pro', 'audio_master', 'podcast', 'church', 'team_topup'];
 const SHOW_TIERS = ['podcast', 'church'];
 
 function getPaystackSecretKey() {
@@ -570,11 +574,26 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
     if (!userSnap.exists) throw new HttpError(404, 'User not found');
     const userData = userSnap.data();
 
-    const planSnap = await adminDb.collection('creditPlans').doc(tier).get();
-    if (!planSnap.exists) throw new HttpError(400, 'Plan not found');
-    const planData = planSnap.data();
+    let planData = { name: 'Team top-up' };
+    if (tier !== 'team_topup') {
+      const planSnap = await adminDb.collection('creditPlans').doc(tier).get();
+      if (!planSnap.exists) throw new HttpError(400, 'Plan not found');
+      planData = planSnap.data();
+    }
+
+    // The team whose pool this user spends from right now (active Podcast or Church plan).
+    const activeShow = userData.showId ? (await adminDb.collection('shows').doc(userData.showId).get()).data() : null;
+    const onActiveTeam = Boolean(activeShow && isShowPlan(activeShow.plan) && (activeShow.memberIds || []).includes(userId));
 
     let showId = null;
+    if (tier === 'payg' && onActiveTeam) {
+      // Personal credits are not spent while the team plan is active, so they would sit unused.
+      throw new HttpError(409, 'You are on a team plan, so your work uses the team\'s shared credits. Buy a team top-up instead.', { code: 'USE_TEAM_TOPUP' });
+    }
+    if (tier === 'team_topup') {
+      if (!onActiveTeam) throw new HttpError(400, 'Team top-ups are for podcast or church teams with an active plan.');
+      showId = userData.showId;
+    }
     if (SHOW_TIERS.includes(tier)) {
       if (!userData.showId) throw new HttpError(400, 'Create your podcast or church account in the Podcast tab first.');
       const show = (await adminDb.collection('shows').doc(userData.showId).get()).data();
@@ -591,6 +610,14 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
       }
       creditsToAdd = customCredits;
       usdAmount = customCredits / PAYG_CREDITS_PER_USD;
+    } else if (tier === 'team_topup') {
+      const credits = parseInt(req.body.customCredits, 10);
+      const packs = credits / TEAM_TOPUP_PACK_CREDITS;
+      if (!Number.isInteger(packs) || packs < 1 || packs > TEAM_TOPUP_MAX_PACKS) {
+        throw new HttpError(400, `Choose 1 to ${TEAM_TOPUP_MAX_PACKS} packs of ${TEAM_TOPUP_PACK_CREDITS} credits.`);
+      }
+      creditsToAdd = credits;
+      usdAmount = teamTopupPriceUsd(credits);
     } else {
       creditsToAdd = PLAN_CREDITS[tier];
       usdAmount = planData.price;
@@ -683,11 +710,11 @@ app.post('/api/paystack/webhook', express.raw({ type: 'application/json' }), asy
 async function applyPaymentOnce(userId, tier, txData) {
   if (!PAID_TIERS.includes(tier)) throw new Error(`Unknown tier: ${tier}`);
   const meta = txData.metadata || {};
-  const creditsAdded = tier === 'payg' ? Number(meta.creditsToAdd) || 0 : PLAN_CREDITS[tier];
+  const creditsAdded = tier === 'payg' || tier === 'team_topup' ? Number(meta.creditsToAdd) || 0 : PLAN_CREDITS[tier];
 
   const txRef = adminDb.collection('transactions').doc(String(txData.reference));
   const userRef = adminDb.collection('users').doc(userId);
-  const showRef = SHOW_TIERS.includes(tier) && meta.showId ? adminDb.collection('shows').doc(meta.showId) : null;
+  const showRef = (SHOW_TIERS.includes(tier) || tier === 'team_topup') && meta.showId ? adminDb.collection('shows').doc(meta.showId) : null;
 
   await adminDb.runTransaction(async (tx) => {
     const reads = [tx.get(txRef), tx.get(userRef)];
@@ -702,7 +729,10 @@ async function applyPaymentOnce(userId, tier, txData) {
     if (showRef) {
       const show = showSnap?.exists ? showSnap.data() : null;
       if (!show) throw new Error(`Show ${meta.showId} not found for payment ${txData.reference}`);
-      tx.update(showRef, {
+      if (tier === 'team_topup') {
+        // Extra credits only: the plan and renewal date stay as they are.
+        tx.update(showRef, { credits: Math.max(0, Number(show.credits || 0)) + creditsAdded });
+      } else tx.update(showRef, {
         plan: tier,
         credits: Math.max(0, Number(show.credits || 0)) + creditsAdded,
         creditsUsedThisMonth: 0,

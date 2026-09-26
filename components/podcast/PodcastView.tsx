@@ -115,7 +115,7 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
       {show && (
         <AccountBar accounts={accounts} currentId={show.id} switching={switching} onOpen={openAccount} onAdd={() => setHub(true)} />
       )}
-      {show && <ShowHeader show={show} onActivate={() => onChoosePlan(planFor(show))} />}
+      {show && <ShowHeader show={show} onActivate={() => onChoosePlan(planFor(show))} onTopUp={() => onChoosePlan('team_topup')} />}
 
       <div className="flex gap-1 overflow-x-auto rounded-full border border-line bg-surface p-1 scrollbar-thin sm:w-fit" role="tablist">
         {tabs.map(([id, label, Icon]) => (
@@ -186,7 +186,10 @@ function AccountBar({ accounts, currentId, switching, onOpen, onAdd }: {
   );
 }
 
-function ShowHeader({ show, onActivate }: { show: Show; onActivate: () => void }) {
+/** Below this the header warns the team; about 100 minutes of cleaning left. */
+const LOW_CREDITS = 200;
+
+function ShowHeader({ show, onActivate, onTopUp }: { show: Show; onActivate: () => void; onTopUp: () => void }) {
   const Icon = TYPE_ICONS[show.type] || Radio;
   const t = showType(show.type);
   const planName = show.plan === 'church' ? 'Church plan' : show.plan === 'podcast' ? 'Podcast plan' : null;
@@ -207,8 +210,11 @@ function ShowHeader({ show, onActivate }: { show: Show; onActivate: () => void }
         <div className="flex gap-6 sm:text-right">
           <div>
             <p className="eyebrow">Shared credits</p>
-            <p className="mt-1 text-2xl font-extrabold">{show.credits.toLocaleString()}</p>
-            <p className="text-xs text-muted">{planName}</p>
+            <p className={`mt-1 text-2xl font-extrabold ${show.credits < LOW_CREDITS ? 'text-danger' : ''}`}>{show.credits.toLocaleString()}</p>
+            <p className="text-xs text-muted">{show.credits < LOW_CREDITS ? 'Running low' : planName}</p>
+            <button type="button" onClick={onTopUp} className={`mt-1.5 text-xs font-bold ${show.credits < LOW_CREDITS ? 'btn-primary px-3 py-1.5' : 'text-accent'}`}>
+              Top up credits
+            </button>
           </div>
           <div>
             <p className="eyebrow">Renews</p>
@@ -217,7 +223,7 @@ function ShowHeader({ show, onActivate }: { show: Show; onActivate: () => void }
             </p>
             {show.role === 'owner' && (
               <div className="mt-1 flex flex-col gap-0.5 text-xs font-bold text-accent sm:items-end">
-                <button type="button" onClick={onActivate}>Renew / add credits</button>
+                <button type="button" onClick={onActivate}>Renew plan (+1,500)</button>
               </div>
             )}
           </div>

@@ -12,7 +12,7 @@ import type { SubscriptionTier } from './constants/subscriptionPlans';
 import type { Plan } from './services/api';
 import { PLAN_IDS, isShowPlan } from './shared/processing.js';
 
-const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master', 'podcast', 'church'];
+const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master', 'podcast', 'church', 'team_topup'];
 
 interface Checkout {
   tier: SubscriptionTier;
@@ -127,6 +127,9 @@ export default function App() {
     if (paymentReturn && user) setCheckout({ tier: paymentReturn.tier, credits: paymentReturn.credits });
   }, [paymentReturn, user]);
 
+  // On an active team plan, work is paid from the team pool, so "buy credits" means a team top-up.
+  const choosePlan = (tier: SubscriptionTier) => setUpgradeTier(tier === 'payg' && effective?.showBilling ? 'team_topup' : tier);
+
   if (!authReady) {
     return (
       <div className="grid min-h-screen place-items-center">
@@ -153,7 +156,7 @@ export default function App() {
   return (
     <>
       {user && effective ? (
-        <Studio user={user} account={effective} onChoosePlan={setUpgradeTier} onSignOut={() => signOut(auth)} />
+        <Studio user={user} account={effective} onChoosePlan={choosePlan} onSignOut={() => signOut(auth)} />
       ) : user ? (
         <div className="grid min-h-screen place-items-center">
           <LogoMark className="h-10 w-10 animate-pulse" />

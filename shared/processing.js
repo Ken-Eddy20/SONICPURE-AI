@@ -324,6 +324,16 @@ export function estimateCredits(feature, durationSeconds, options = {}) {
 }
 
 /** USD price for a Pay As You Go purchase. */
+/**
+ * Team top-up: extra credits for a podcast or church team's shared pool, bought in packs by
+ * anyone on the team while the plan is active. 2.9¢ a credit, slightly above the plan's 2.3¢,
+ * so the monthly plan stays the better deal.
+ */
+export const TEAM_TOPUP_PACK_CREDITS = 350;
+export const TEAM_TOPUP_PACK_USD = 10;
+export const TEAM_TOPUP_MAX_PACKS = 10;
+export const teamTopupPriceUsd = (credits) => (credits / TEAM_TOPUP_PACK_CREDITS) * TEAM_TOPUP_PACK_USD;
+
 export function paygPriceUsd(credits) {
   return credits / PAYG_CREDITS_PER_USD;
 }

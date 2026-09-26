@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ArrowRight, Check, ShieldCheck, X } from 'lucide-react';
 import { TIER_DETAILS, type SubscriptionTier } from '../constants/subscriptionPlans';
-import { PAYG_MAX_CREDITS, PAYG_MIN_CREDITS, paygPriceUsd } from '../shared/processing.js';
+import {
+  PAYG_MAX_CREDITS, PAYG_MIN_CREDITS, TEAM_TOPUP_PACK_CREDITS, TEAM_TOPUP_MAX_PACKS, paygPriceUsd, teamTopupPriceUsd,
+} from '../shared/processing.js';
 
 interface SubscriptionModalProps {
   isOpen: boolean;
@@ -22,6 +24,8 @@ function formatUsd(amount: number) {
 export default function SubscriptionModal({ isOpen, onClose, tier, isAuthenticated, onSignIn, onCheckout }: SubscriptionModalProps) {
   const details = TIER_DETAILS[tier];
   const isPayg = tier === 'payg';
+  const isTeam = tier === 'team_topup';
+  const [packs, setPacks] = useState(1);
   const [credits, setCredits] = useState(200);
   const [raw, setRaw] = useState('200');
 
@@ -69,12 +73,34 @@ export default function SubscriptionModal({ isOpen, onClose, tier, isAuthenticat
               <X className="h-4 w-4" />
             </button>
 
-            <p className="eyebrow text-accent">{isPayg ? 'Top up' : 'Upgrade'}</p>
+            <p className="eyebrow text-accent">{isPayg || isTeam ? 'Top up' : 'Upgrade'}</p>
             <h2 id="sub-title" className="mt-2 text-2xl font-extrabold tracking-tight">{details.name}</h2>
             <p className="mt-1 text-sm text-muted">{details.description}</p>
 
             <div className="mt-6 rounded-2xl bg-sunken p-5">
-              {isPayg ? (
+              {isTeam ? (
+                <>
+                  <p className="text-xs font-semibold text-muted">How many packs of {TEAM_TOPUP_PACK_CREDITS} credits?</p>
+                  <div className="mt-2 grid grid-cols-4 gap-2">
+                    {[1, 2, 3, 5].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setPacks(n)}
+                        aria-pressed={packs === n}
+                        className={`rounded-xl border py-2 text-sm font-bold transition-colors ${packs === n ? 'border-accent bg-accent-soft text-ink' : 'border-line bg-surface hover:border-line-strong'}`}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-4 flex items-baseline justify-between">
+                    <span className="text-sm text-muted">{(packs * TEAM_TOPUP_PACK_CREDITS).toLocaleString()} credits</span>
+                    <span className="text-3xl font-extrabold tracking-tight">{formatUsd(teamTopupPriceUsd(packs * TEAM_TOPUP_PACK_CREDITS))}</span>
+                  </div>
+                  <p className="mt-1 text-right text-xs text-muted">$10 per pack · up to {TEAM_TOPUP_MAX_PACKS} packs at once</p>
+                </>
+              ) : isPayg ? (
                 <>
                   <p className="text-xs font-semibold text-muted">How many credits?</p>
                   <div className="mt-2 grid grid-cols-4 gap-2">
@@ -142,7 +168,7 @@ export default function SubscriptionModal({ isOpen, onClose, tier, isAuthenticat
               disabled={isPayg && !validAmount}
               onClick={() => {
                 onClose();
-                if (isAuthenticated) onCheckout?.(tier, isPayg ? credits : undefined);
+                if (isAuthenticated) onCheckout?.(tier, isTeam ? packs * TEAM_TOPUP_PACK_CREDITS : isPayg ? credits : undefined);
                 else onSignIn?.();
               }}
               className="btn-primary mt-6 w-full py-3.5"
