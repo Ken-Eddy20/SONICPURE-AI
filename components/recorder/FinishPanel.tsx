@@ -18,7 +18,7 @@ import { formatBytes } from '../../services/media';
 import { fmtTime } from './AudioEditor';
 
 interface Props {
-  source: AudioBuffer;
+  sources: AudioBuffer[];
   state: EditState;
   meta: AudioMetadata;
   coverUrl: string | null;
@@ -36,7 +36,7 @@ const GENRES = ['Gospel', 'Sermon', 'Worship', 'Choir', 'Praise', 'Teaching', 'P
 
 type Busy = null | 'encode' | 'save' | 'whatsapp' | 'telegram' | 'clean' | 'publish';
 
-export default function FinishPanel({ source, state, meta, coverUrl, onMetaChange, plan, showActive, showType, onBack, onSaved, onUpgrade }: Props) {
+export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChange, plan, showActive, showType, onBack, onSaved, onUpgrade }: Props) {
   const [busy, setBusy] = useState<Busy>(null);
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
@@ -61,7 +61,7 @@ export default function FinishPanel({ source, state, meta, coverUrl, onMetaChang
     if (cacheRef.current?.key === key) return cacheRef.current.blob;
     setBusy((b) => b ?? 'encode');
     setProgress(0);
-    const raw = await encodeMp3(source, state, setProgress);
+    const raw = await encodeMp3(sources, state, setProgress);
     const blob = tagMp3(raw, meta);
     cacheRef.current = { key, blob };
     return blob;

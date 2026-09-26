@@ -105,8 +105,10 @@ export async function getAccessibleFile(fileId, userId) {
   const data = snap.data();
   if (data.userId === userId) return { ref, data };
   if (data.showId) {
+    // Any of the user's accounts counts, not just the one they are working in now.
     const user = (await adminDb.collection('users').doc(userId).get()).data();
-    if (user?.showId === data.showId) return { ref, data };
+    const ids = new Set([...(user?.showIds || []), user?.showId].filter(Boolean));
+    if (ids.has(data.showId)) return { ref, data };
   }
   throw new HttpError(403, 'Not authorized');
 }

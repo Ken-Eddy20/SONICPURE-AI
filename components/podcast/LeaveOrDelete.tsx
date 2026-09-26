@@ -53,7 +53,7 @@ export default function LeaveOrDelete({ show, onChanged }: Props) {
     <div className="card border-danger/30 p-6">
       <h2 className="text-lg font-bold">Delete this account</h2>
       <p className="mt-1 text-sm text-muted">
-        Closes {show.name} for everyone. Want to start a different {show.type === 'church' ? 'church or podcast' : 'show'} account? Delete this one first.
+        Closes {show.name} for everyone. To start another church or podcast account you do not need to delete this one: use “New church or podcast account” at the top.
       </p>
       {!open ? (
         <button type="button" onClick={() => setOpen(true)} className="btn-ghost mt-4 py-2.5 text-danger">

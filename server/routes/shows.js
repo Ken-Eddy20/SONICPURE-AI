@@ -23,6 +23,18 @@ const artworkUpload = multer({ storage: multer.memoryStorage(), limits: { fileSi
 const clean = (value, max) => String(value ?? '').trim().slice(0, max);
 const newInviteCode = () => crypto.randomBytes(5).toString('base64url').replace(/[-_]/g, '').slice(0, 6).toUpperCase().padEnd(6, 'X');
 const PODCAST_LANGUAGES = ['en', 'tw', 'ak', 'ee', 'gaa', 'ha', 'fr'];
+/** Most accounts one person can be part of (e.g. their church plus a podcast). */
+const MAX_SHOWS_PER_USER = 5;
+
+/** Every show the user belongs to. `showId` is the one they are working in right now. */
+export const showIdsOf = (user) => [...new Set([...(user?.showIds || []), user?.showId].filter(Boolean))];
+
+/** User doc update that drops one show and moves the active one to another if needed. */
+function detachUpdate(user, showId) {
+  const remaining = showIdsOf(user).filter((id) => id !== showId);
+  return { showIds: remaining, showId: user.showId === showId ? remaining[0] || null : user.showId || null };
+}
+
 const posInt = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 && Number(v) < 10000 ? Number(v) : null);
 
 /** Load the caller's show and their role in it. */
@@ -127,15 +139,19 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
   router.get('/', route('Could not load your show', async (req, res) => {
     const { uid } = await verifyAuth(req);
     const user = (await users().doc(uid).get()).data();
-    if (!user?.showId) return res.json({ show: null });
-    const snap = await shows().doc(user.showId).get();
-    if (!snap.exists) return res.json({ show: null });
+    const ids = showIdsOf(user);
+    const snaps = ids.length ? await adminDb.getAll(...ids.map((id) => shows().doc(id))) : [];
+    const accounts = snaps
+      .filter((d) => d.exists && (d.data().memberIds || []).includes(uid))
+      .map((d) => ({ id: d.id, name: d.data().name, type: d.data().type || 'podcast', role: d.data().ownerId === uid ? 'owner' : 'editor', active: isShowPlan(d.data().plan) }));
+    const snap = snaps.find((d) => d.id === user?.showId && d.exists && (d.data().memberIds || []).includes(uid));
+    if (!snap) return res.json({ show: null, accounts });
     const s = snap.data();
     const membersSnap = await snap.ref.collection('members').get();
     const members = membersSnap.docs
       .map((d) => ({ uid: d.id, email: d.data().email || '', displayName: d.data().displayName || '', role: d.data().role, joinedAt: iso(d.data().joinedAt) }))
       .sort((a, b) => (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : (a.joinedAt || '').localeCompare(b.joinedAt || '')));
-    res.json({ show: serializeShow(snap.id, s, s.ownerId === uid ? 'owner' : 'editor', feedUrlFor(req, snap.id)), members });
+    res.json({ show: serializeShow(snap.id, s, s.ownerId === uid ? 'owner' : 'editor', feedUrlFor(req, snap.id)), members, accounts });
   }));
 
   router.post('/', route('Could not create the account', async (req, res) => {
@@ -149,7 +165,7 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
       const userRef = users().doc(decoded.uid);
       const user = (await tx.get(userRef)).data();
       if (!user) throw new HttpError(404, 'User not found');
-      if (user.showId) throw new HttpError(409, 'You are already part of a podcast or church account.');
+      if (showIdsOf(user).length >= MAX_SHOWS_PER_USER) throw new HttpError(409, `You can be part of up to ${MAX_SHOWS_PER_USER} podcast or church accounts.`);
       const now = new Date();
       tx.set(ref, {
         name,
@@ -165,7 +181,7 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
         createdAt: now,
       });
       tx.set(ref.collection('members').doc(decoded.uid), { email: user.email || '', displayName: user.displayName || '', role: 'owner', joinedAt: now });
-      tx.update(userRef, { showId: ref.id });
+      tx.update(userRef, { showId: ref.id, showIds: FieldValue.arrayUnion(ref.id) });
     });
     res.status(201).json({ id: ref.id });
   }));
@@ -180,16 +196,31 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
       const userRef = users().doc(uid);
       const [user, show] = [(await tx.get(userRef)).data(), (await tx.get(ref)).data()];
       if (!user) throw new HttpError(404, 'User not found');
-      if (user.showId) throw new HttpError(409, 'You are already part of a podcast or church account.');
+      if ((show.memberIds || []).includes(uid)) throw new HttpError(409, 'You are already on this team. Pick it from your accounts.');
+      if (showIdsOf(user).length >= MAX_SHOWS_PER_USER) throw new HttpError(409, `You can be part of up to ${MAX_SHOWS_PER_USER} podcast or church accounts.`);
       const max = showMaxMembers(show.plan);
       if ((show.memberIds || []).length >= max) {
         throw new HttpError(409, `This team is full (${max} people on the current plan).`);
       }
       tx.update(ref, { memberIds: FieldValue.arrayUnion(uid) });
       tx.set(ref.collection('members').doc(uid), { email: user.email || '', displayName: user.displayName || '', role: 'editor', joinedAt: new Date() });
-      tx.update(userRef, { showId: ref.id });
+      tx.update(userRef, { showId: ref.id, showIds: FieldValue.arrayUnion(ref.id) });
     });
     res.json({ id: ref.id });
+  }));
+
+  // Work in another of your accounts, or in none (id null: your own plan and credits).
+  router.post('/switch', route('Could not switch account', async (req, res) => {
+    const { uid } = await verifyAuth(req);
+    const id = req.body?.id ? String(req.body.id) : null;
+    const userRef = users().doc(uid);
+    const user = (await userRef.get()).data();
+    if (id) {
+      const show = (await shows().doc(id).get()).data();
+      if (!show || !(show.memberIds || []).includes(uid)) throw new HttpError(404, 'You are not part of that account.');
+    }
+    await userRef.update({ showId: id, showIds: id ? FieldValue.arrayUnion(id) : showIdsOf(user) });
+    res.json({ success: true });
   }));
 
   router.post('/leave', route('Could not leave', async (req, res) => {
@@ -215,7 +246,8 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     for (const d of members.docs) batch.delete(d.ref);
     for (const memberUid of new Set([...(show.memberIds || []), show.ownerId])) {
       const userRef = users().doc(memberUid);
-      if ((await userRef.get()).data()?.showId === ref.id) batch.update(userRef, { showId: null });
+      const member = (await userRef.get()).data();
+      if (member && showIdsOf(member).includes(ref.id)) batch.update(userRef, detachUpdate(member, ref.id));
     }
     batch.delete(ref);
     await batch.commit();
@@ -384,11 +416,12 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
 
 async function removeMember(showRef, memberUid) {
   await adminDb.runTransaction(async (tx) => {
-    const show = (await tx.get(showRef)).data();
+    const userRef = users().doc(memberUid);
+    const [show, member] = [(await tx.get(showRef)).data(), (await tx.get(userRef)).data()];
     if (!(show.memberIds || []).includes(memberUid)) throw new HttpError(404, 'That person is not a member.');
     if (show.ownerId === memberUid) throw new HttpError(400, 'The owner cannot be removed.');
     tx.update(showRef, { memberIds: FieldValue.arrayRemove(memberUid) });
     tx.delete(showRef.collection('members').doc(memberUid));
-    tx.update(users().doc(memberUid), { showId: null });
+    if (member) tx.update(userRef, detachUpdate(member, showRef.id));
   });
 }

@@ -1,5 +1,5 @@
 import { ID3Writer } from 'browser-id3-writer';
-import { renderRange, totalLength, type EditState } from './audioEdit';
+import { outputChannels, renderRange, totalLength, type EditState } from './audioEdit';
 
 export interface AudioMetadata {
   title: string;
@@ -37,10 +37,10 @@ function bitrateFor(sampleRate: number, channels: number) {
 }
 
 /** Render the edited timeline and encode it as MP3 in a worker. */
-export async function encodeMp3(source: AudioBuffer, state: EditState, onProgress: (fraction: number) => void): Promise<ArrayBuffer> {
+export async function encodeMp3(sources: AudioBuffer[], state: EditState, onProgress: (fraction: number) => void): Promise<ArrayBuffer> {
   const duration = totalLength(state);
-  const channels = Math.min(2, source.numberOfChannels);
-  const sampleRate = source.sampleRate;
+  const channels = outputChannels(sources);
+  const sampleRate = sources[0].sampleRate;
   const worker = new Worker(new URL('./mp3.worker.ts', import.meta.url), { type: 'module' });
 
   try {
@@ -49,7 +49,7 @@ export async function encodeMp3(source: AudioBuffer, state: EditState, onProgres
     for (let w = 0; w < windows; w++) {
       const from = w * WINDOW_SECONDS;
       const to = Math.min(duration, from + WINDOW_SECONDS);
-      const data = await renderRange(source, state, from, to, sampleRate);
+      const data = await renderRange(sources, state, from, to, sampleRate);
       const left = data[0].slice();
       const right = channels > 1 ? data[1].slice() : undefined;
       // Wait for the worker to finish each window so memory stays at one window at a time.

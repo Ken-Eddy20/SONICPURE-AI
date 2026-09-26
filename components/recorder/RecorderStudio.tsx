@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, FolderOpen, LifeBuoy, Mic, Music, Send, Trash2 } from 'lucide-react';
 import { ApiError, deleteRecording, listRecordings, type Plan, type SavedRecording, type ShowType } from '../../services/api';
 import {
-  MAX_EDIT_SECONDS, computeSourcePeaks, decodeRateFor, initialState, type EditState, type SourcePeaks,
+  MAX_EDIT_SECONDS, MAX_INSERT_SECONDS, computeSourcePeaks, decodeRateFor, initialState, totalLength, type EditState, type SourcePeaks,
 } from '../../services/audioEdit';
 import { EMPTY_METADATA, type AudioMetadata } from '../../services/mp3Export';
 import { deleteSession, listSessions, loadSession, type SessionInfo } from '../../services/recordingStore';
@@ -23,8 +23,9 @@ interface Props {
 type Screen = 'home' | 'record' | 'loading' | 'edit' | 'finish';
 
 interface Project {
-  source: AudioBuffer;
-  peaks: SourcePeaks;
+  /** [0] is the recording; intros, outros and inserted files follow. Never shrinks, so undo stays valid. */
+  sources: AudioBuffer[];
+  peaks: SourcePeaks[];
   sessionId: string | null;
   name: string;
 }
@@ -86,7 +87,7 @@ export default function RecorderStudio({ plan, showActive, showType, onUpgrade }
       setLoadingLabel('Drawing the waveform…');
       await new Promise((r) => setTimeout(r, 30));
       const peaks = computeSourcePeaks(source);
-      setProject({ source, peaks, sessionId, name });
+      setProject({ sources: [source], peaks: [peaks], sessionId, name });
       setHistory({ past: [], present: initialState(source), future: [] });
       setMeta({ ...EMPTY_METADATA, title: name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ') });
       setCoverUrl(null);
@@ -99,6 +100,24 @@ export default function RecorderStudio({ plan, showActive, showType, onUpgrade }
           : 'This audio could not be opened. Try an MP3, M4A or WAV file. Very long files may need a computer rather than a phone.',
       );
     }
+  };
+
+  /** Decode another file (intro, outro, insert) at the recording's sample rate and add it as a source. */
+  const addSource = async (blob: Blob): Promise<{ src: number; seconds: number }> => {
+    if (!project || !history.present) throw new Error('Nothing is open.');
+    let buffer: AudioBuffer;
+    try {
+      const ctx = new OfflineAudioContext(1, 1, project.sources[0].sampleRate);
+      buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
+    } catch {
+      throw new Error('That file could not be opened. Try an MP3, M4A or WAV file.');
+    }
+    if (buffer.duration > MAX_INSERT_SECONDS) throw new Error('Intros, outros and inserts can be up to 30 minutes long.');
+    if (totalLength(history.present) + buffer.duration > MAX_EDIT_SECONDS) throw new Error('That would make the recording longer than 3 hours.');
+    const src = project.sources.length;
+    const peaks = computeSourcePeaks(buffer);
+    setProject((p) => (p ? { ...p, sources: [...p.sources, buffer], peaks: [...p.peaks, peaks] } : p));
+    return { src, seconds: buffer.duration };
   };
 
   const change = (next: EditState) =>
@@ -128,10 +147,12 @@ export default function RecorderStudio({ plan, showActive, showType, onUpgrade }
   if (screen === 'edit' && project && history.present) {
     return (
       <AudioEditor
-        source={project.source}
+        sources={project.sources}
         peaks={project.peaks}
         state={history.present}
         onChange={change}
+        onAddSource={addSource}
+        library={library}
         canUndo={history.past.length > 0}
         canRedo={history.future.length > 0}
         onUndo={undo}
@@ -145,7 +166,7 @@ export default function RecorderStudio({ plan, showActive, showType, onUpgrade }
   if (screen === 'finish' && project && history.present) {
     return (
       <FinishPanel
-        source={project.source}
+        sources={project.sources}
         state={history.present}
         meta={meta}
         coverUrl={coverUrl}

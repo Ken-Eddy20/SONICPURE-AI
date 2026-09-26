@@ -1,13 +1,16 @@
 /**
  * Non-destructive audio editing.
  *
- * The recording is decoded once into `source`. The edited audio is a list of clips that
- * point into it (or are silence), each with a linear gain ramp g0 → g1. Crop, cut, volume,
+ * The recording is decoded once into `sources[0]`. Intros, outros and inserted files are
+ * decoded once into further sources. The edited audio is a list of clips that point into a
+ * source (or are silence), each with a linear gain ramp g0 → g1. Crop, cut, insert, volume,
  * fades and mute only rewrite this small list, so undo/redo is instant and memory stays
  * flat even for multi-hour recordings.
  */
 
 export interface Clip {
+  /** Index of the source buffer (0 = the main recording). */
+  src?: number;
   /** Start/end inside the source buffer, in seconds. Ignored for silence. */
   srcStart: number;
   srcEnd: number;
@@ -96,22 +99,30 @@ export const fadeOut = (s: EditState, a: number, b: number) =>
     g1: c.g1 * (1 - (end - a) / (b - a)),
   }));
 
-export function insertSilence(s: EditState, at: number, seconds: number): EditState {
+/** Put a clip in at time `at` (0 = the very start, totalLength = the end). */
+function insertClip(s: EditState, at: number, clip: Clip): EditState {
   const clips = splitAt(s.clips, at);
   const out: Clip[] = [];
   let pos = 0;
   let inserted = false;
   for (const c of clips) {
     if (!inserted && pos >= at - EPS) {
-      out.push({ srcStart: 0, srcEnd: 0, silence: seconds, g0: 1, g1: 1 });
+      out.push(clip);
       inserted = true;
     }
     out.push(c);
     pos += clipLength(c);
   }
-  if (!inserted) out.push({ srcStart: 0, srcEnd: 0, silence: seconds, g0: 1, g1: 1 });
+  if (!inserted) out.push(clip);
   return { clips: out };
 }
+
+export const insertSilence = (s: EditState, at: number, seconds: number) =>
+  insertClip(s, at, { srcStart: 0, srcEnd: 0, silence: seconds, g0: 1, g1: 1 });
+
+/** Insert the whole of source `src` (an intro, outro or other file) at time `at`. */
+export const insertAudio = (s: EditState, at: number, src: number, seconds: number) =>
+  insertClip(s, at, { src, srcStart: 0, srcEnd: seconds, g0: 1, g1: 1 });
 
 // ─── Waveform peaks ──────────────────────────────────────────────
 
@@ -143,7 +154,7 @@ export function computeSourcePeaks(source: AudioBuffer, binsPerSecond = 100): So
 }
 
 /** Peak of the edited timeline for each of `count` columns between t0 and t1. */
-export function timelinePeaks(state: EditState, src: SourcePeaks, t0: number, t1: number, count: number): Float32Array {
+export function timelinePeaks(state: EditState, peaks: SourcePeaks[], t0: number, t1: number, count: number): Float32Array {
   const out = new Float32Array(count);
   const colDur = (t1 - t0) / count;
   let pos = 0;
@@ -153,6 +164,7 @@ export function timelinePeaks(state: EditState, src: SourcePeaks, t0: number, t1
     const cEnd = pos + len;
     pos = cEnd;
     if (cEnd <= t0 || cStart >= t1 || c.silence !== undefined) continue;
+    const src = peaks[c.src ?? 0];
     const firstCol = Math.max(0, Math.floor((cStart - t0) / colDur));
     const lastCol = Math.min(count - 1, Math.floor((cEnd - t0) / colDur));
     for (let col = firstCol; col <= lastCol; col++) {
@@ -173,10 +185,11 @@ export function timelinePeaks(state: EditState, src: SourcePeaks, t0: number, t1
 }
 
 /** Loudest point after edits, used by Normalise. */
-export function timelinePeak(state: EditState, src: SourcePeaks): number {
+export function timelinePeak(state: EditState, peaks: SourcePeaks[]): number {
   let peak = 0;
   for (const c of state.clips) {
     if (c.silence !== undefined) continue;
+    const src = peaks[c.src ?? 0];
     const b0 = Math.floor(c.srcStart * src.binsPerSecond);
     const b1 = Math.ceil(c.srcEnd * src.binsPerSecond);
     const g = Math.max(Math.abs(c.g0), Math.abs(c.g1));
@@ -188,8 +201,8 @@ export function timelinePeak(state: EditState, src: SourcePeaks): number {
   return peak;
 }
 
-export function normalize(state: EditState, src: SourcePeaks, target = 0.89): EditState {
-  const peak = timelinePeak(state, src);
+export function normalize(state: EditState, peaks: SourcePeaks[], target = 0.89): EditState {
+  const peak = timelinePeak(state, peaks);
   if (peak <= 0) return state;
   const factor = target / peak;
   return { clips: state.clips.map((c) => ({ ...c, g0: c.g0 * factor, g1: c.g1 * factor })) };
@@ -203,7 +216,7 @@ export function normalize(state: EditState, src: SourcePeaks, target = 0.89): Ed
  */
 export function schedule(
   ctx: BaseAudioContext,
-  source: AudioBuffer,
+  sources: AudioBuffer[],
   state: EditState,
   from: number,
   to: number,
@@ -222,7 +235,7 @@ export function schedule(
     const gainAt = (t: number) => c.g0 + (c.g1 - c.g0) * ((t - cStart) / len);
 
     const node = ctx.createBufferSource();
-    node.buffer = source;
+    node.buffer = sources[c.src ?? 0];
     const gain = ctx.createGain();
     const t0 = when + (segStart - from);
     const t1 = when + (segEnd - from);
@@ -236,14 +249,20 @@ export function schedule(
 }
 
 /** Render [from, to] of the edited timeline to raw channel data. */
-export async function renderRange(source: AudioBuffer, state: EditState, from: number, to: number, sampleRate: number) {
-  const channels = Math.min(2, source.numberOfChannels);
+export async function renderRange(sources: AudioBuffer[], state: EditState, from: number, to: number, sampleRate: number) {
+  const channels = outputChannels(sources);
   const length = Math.max(1, Math.round((to - from) * sampleRate));
   const ctx = new OfflineAudioContext(channels, length, sampleRate);
-  schedule(ctx, source, state, from, to, 0);
+  schedule(ctx, sources, state, from, to, 0);
   const rendered = await ctx.startRendering();
   return Array.from({ length: channels }, (_, i) => rendered.getChannelData(i));
 }
+
+/** Stereo when any source is stereo, otherwise mono. */
+export const outputChannels = (sources: AudioBuffer[]) => Math.min(2, Math.max(...sources.map((s) => s.numberOfChannels)));
+
+/** Longest intro, outro or inserted file. */
+export const MAX_INSERT_SECONDS = 30 * 60;
 
 /**
  * Pick a decode sample rate that keeps a whole recording in memory on normal devices.

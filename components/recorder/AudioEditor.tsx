@@ -4,15 +4,21 @@ import {
   VolumeX, ZoomIn, ZoomOut, Waves, TrendingUp, TrendingDown, Plus,
 } from 'lucide-react';
 import {
-  changeGain, crop, cut, fadeIn, fadeOut, insertSilence, mute, normalize, schedule, timelinePeaks, totalLength,
+  changeGain, clipLength, crop, cut, fadeIn, fadeOut, insertSilence, mute, normalize, schedule, timelinePeaks, totalLength,
   type EditState, type SourcePeaks,
 } from '../../services/audioEdit';
+import type { SavedRecording } from '../../services/api';
+import AddAudio from './AddAudio';
 
 interface Props {
-  source: AudioBuffer;
-  peaks: SourcePeaks;
+  sources: AudioBuffer[];
+  peaks: SourcePeaks[];
   state: EditState;
   onChange: (next: EditState) => void;
+  /** Decode another file and return its source index. */
+  onAddSource: (blob: Blob) => Promise<{ src: number; seconds: number }>;
+  /** Saved recordings the user can pick as an intro, outro or insert. */
+  library: SavedRecording[] | null;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -41,7 +47,7 @@ function parseTime(v: string): number | null {
 
 const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-export default function AudioEditor({ source, peaks, state, onChange, canUndo, canRedo, onUndo, onRedo, title, onBack, onNext }: Props) {
+export default function AudioEditor({ sources, peaks, state, onChange, onAddSource, library, canUndo, canRedo, onUndo, onRedo, title, onBack, onNext }: Props) {
   const duration = totalLength(state);
   const [view, setView] = useState({ start: 0, end: duration });
   const [sel, setSel] = useState<Sel>(null);
@@ -96,11 +102,11 @@ export default function AudioEditor({ source, peaks, state, onChange, canUndo, c
   const play = useCallback(
     (from: number, to: number) => {
       stop();
-      if (!ctxRef.current) ctxRef.current = new AudioContext({ sampleRate: source.sampleRate });
+      if (!ctxRef.current) ctxRef.current = new AudioContext({ sampleRate: sources[0].sampleRate });
       const ctx = ctxRef.current;
       ctx.resume();
       const startAt = ctx.currentTime + 0.05;
-      nodesRef.current = schedule(ctx, source, state, from, to, startAt);
+      nodesRef.current = schedule(ctx, sources, state, from, to, startAt);
       playRef.current = { startAt, from, to };
       setPlaying(true);
       const tick = () => {
@@ -119,7 +125,7 @@ export default function AudioEditor({ source, peaks, state, onChange, canUndo, c
       };
       rafRef.current = requestAnimationFrame(tick);
     },
-    [source, state, duration, stop],
+    [sources, state, duration, stop],
   );
 
   useEffect(() => () => {
@@ -137,6 +143,17 @@ export default function AudioEditor({ source, peaks, state, onChange, canUndo, c
   // ── Drawing ──
   const HEIGHT = 180;
   const colPeaks = useMemo(() => timelinePeaks(state, peaks, view.start, view.end, Math.floor(width / 2)), [state, peaks, view, width]);
+  // Where the added audio (intros, inserts, outros) sits on the timeline.
+  const addedRanges = useMemo(() => {
+    const out: [number, number][] = [];
+    let pos = 0;
+    for (const c of state.clips) {
+      const len = clipLength(c);
+      if ((c.src ?? 0) > 0 && c.silence === undefined) out.push([pos, pos + len]);
+      pos += len;
+    }
+    return out;
+  }, [state]);
   const miniPeaks = useMemo(() => timelinePeaks(state, peaks, 0, duration || 1, Math.floor(width / 2)), [state, peaks, duration, width]);
 
   useEffect(() => {
@@ -164,9 +181,15 @@ export default function AudioEditor({ source, peaks, state, onChange, canUndo, c
       g.fillText(fmtTime(t, step < 1), x(t) + 3, 12);
     }
 
+    // Added audio gets a coloured band along the bottom.
+    g.fillStyle = cssVar('--warn');
+    for (const [a, b] of addedRanges) {
+      if (b < view.start || a > view.end) continue;
+      g.fillRect(x(a), HEIGHT - 4, Math.max(2, x(b) - x(a)), 4);
+    }
     if (sel) {
       g.fillStyle = soft;
-      g.fillRect(x(sel.a), 16, Math.max(1, x(sel.b) - x(sel.a)), HEIGHT - 16);
+      g.fillRect(x(sel.a), 16, Math.max(1, x(sel.b) - x(sel.a)), HEIGHT - 20);
     }
     const mid = 16 + (HEIGHT - 16) / 2;
     const amp = (HEIGHT - 24) / 2;
@@ -182,7 +205,7 @@ export default function AudioEditor({ source, peaks, state, onChange, canUndo, c
     g.globalAlpha = 1;
     g.fillStyle = cssVar('--danger');
     g.fillRect(x(playhead) - 1, 14, 2, HEIGHT - 14);
-  }, [colPeaks, view, sel, playhead, width]);
+  }, [colPeaks, view, sel, playhead, width, addedRanges]);
 
   useEffect(() => {
     const canvas = miniRef.current;
@@ -354,6 +377,21 @@ export default function AudioEditor({ source, peaks, state, onChange, canUndo, c
 
         <SelectionBar sel={sel} duration={duration} onChange={setSel} onZoom={() => sel && zoomTo((sel.a + sel.b) / 2, selLen * 1.2)} />
       </div>
+
+      <AddAudio
+        state={state}
+        playhead={playhead}
+        library={library}
+        onAddSource={onAddSource}
+        onBefore={stop}
+        onInserted={(next, at, seconds) => {
+          apply(next);
+          // Select the new audio so it can be faded or its volume matched straight away.
+          setSel({ a: at, b: at + seconds });
+          setPlayhead(at);
+          setView({ start: 0, end: totalLength(next) });
+        }}
+      />
 
       {/* Tools */}
       <div className="grid gap-4 lg:grid-cols-3">

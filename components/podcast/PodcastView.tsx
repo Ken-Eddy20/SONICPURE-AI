@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { AudioLines, Building2, Church as ChurchIcon, Loader2, Mic2, Podcast, Radio, Settings, Users } from 'lucide-react';
-import { ApiError, createShow, getShow, joinShow, type Plan, type Show, type ShowMember, type ShowType } from '../../services/api';
+import { ArrowLeft, AudioLines, Building2, Church as ChurchIcon, Loader2, Mic2, Plus, Podcast, Radio, Settings, Users } from 'lucide-react';
+import {
+  ApiError, createShow, getShow, joinShow, switchShow, type Plan, type Show, type ShowAccount, type ShowMember, type ShowType,
+} from '../../services/api';
 import type { SubscriptionTier } from '../../constants/subscriptionPlans';
 import { SHOW_TYPES, showType } from '../../shared/processing.js';
 import RecorderStudio from '../recorder/RecorderStudio';
@@ -23,6 +25,10 @@ export const TYPE_ICONS: Record<ShowType, typeof Podcast> = { church: ChurchIcon
 export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
   const [show, setShow] = useState<Show | null | undefined>(undefined);
   const [members, setMembers] = useState<ShowMember[]>([]);
+  const [accounts, setAccounts] = useState<ShowAccount[]>([]);
+  /** The "Your accounts" page: create, join or open another account. */
+  const [hub, setHub] = useState(false);
+  const [switching, setSwitching] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('recorder');
   const [error, setError] = useState<string | null>(null);
 
@@ -31,6 +37,7 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
       const res = await getShow();
       setShow(res.show);
       setMembers(res.members || []);
+      setAccounts(res.accounts || []);
       setError(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load your account.');
@@ -41,6 +48,19 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  const openAccount = async (id: string) => {
+    setSwitching(id);
+    try {
+      await switchShow(id);
+      await reload();
+      setHub(false);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not open that account.');
+    } finally {
+      setSwitching(null);
+    }
+  };
 
   if (show === undefined) {
     return (
@@ -71,8 +91,30 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
     onChoosePlan(tier || 'payg');
   };
 
+  const setup = (
+    <ShowSetup
+      accounts={accounts}
+      currentId={show?.id || null}
+      switching={switching}
+      onOpen={openAccount}
+      onBack={show && hub ? () => setHub(false) : undefined}
+      backLabel={show?.name}
+      onDone={async () => {
+        await reload();
+        setHub(false);
+        setTab('recorder');
+      }}
+      error={error}
+    />
+  );
+
+  if (show && hub) return setup;
+
   return (
     <div className="space-y-6">
+      {show && (
+        <AccountBar accounts={accounts} currentId={show.id} switching={switching} onOpen={openAccount} onAdd={() => setHub(true)} />
+      )}
       {show && <ShowHeader show={show} onActivate={() => onChoosePlan(planFor(show))} onChangePlan={onChoosePlan} />}
 
       <div className="flex gap-1 overflow-x-auto rounded-full border border-line bg-surface p-1 scrollbar-thin sm:w-fit" role="tablist">
@@ -95,10 +137,51 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
       {current === 'recorder' && (
         <RecorderStudio plan={plan} showActive={showActive} showType={show?.type || null} onUpgrade={upgrade} />
       )}
-      {current === 'setup' && <ShowSetup onDone={reload} error={error} />}
+      {current === 'setup' && setup}
       {show && current === 'episodes' && <EpisodesTab show={show} onActivate={() => onChoosePlan(planFor(show))} onChanged={reload} />}
       {show && current === 'team' && <TeamTab show={show} members={members} onChanged={reload} />}
       {show && current === 'settings' && <SettingsTab show={show} onChanged={reload} />}
+    </div>
+  );
+}
+
+/** Quick switch between the user's accounts, plus the way back to the create/join page. */
+function AccountBar({ accounts, currentId, switching, onOpen, onAdd }: {
+  accounts: ShowAccount[];
+  currentId: string;
+  switching: string | null;
+  onOpen: (id: string) => void;
+  onAdd: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-semibold text-muted">Your accounts:</span>
+      {accounts.map((a) => {
+        const Icon = TYPE_ICONS[a.type] || Radio;
+        const current = a.id === currentId;
+        return (
+          <button
+            key={a.id}
+            type="button"
+            onClick={() => !current && onOpen(a.id)}
+            disabled={switching !== null}
+            aria-current={current}
+            className={`flex max-w-[16rem] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              current ? 'border-accent bg-accent-soft text-accent' : 'border-line bg-surface text-muted hover:border-accent hover:text-ink'
+            }`}
+          >
+            {switching === a.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5 shrink-0" />}
+            <span className="truncate">{a.name}</span>
+          </button>
+        );
+      })}
+      <button
+        type="button"
+        onClick={onAdd}
+        className="flex items-center gap-1.5 rounded-full border border-dashed border-line-strong px-3 py-1.5 text-xs font-semibold text-muted hover:border-accent hover:text-ink"
+      >
+        <Plus className="h-3.5 w-3.5" /> New church or podcast account
+      </button>
     </div>
   );
 }
@@ -164,7 +247,16 @@ function ShowHeader({ show, onActivate, onChangePlan }: { show: Show; onActivate
   );
 }
 
-function ShowSetup({ onDone, error }: { onDone: () => void; error: string | null }) {
+function ShowSetup({ accounts, currentId, switching, onOpen, onBack, backLabel, onDone, error }: {
+  accounts: ShowAccount[];
+  currentId: string | null;
+  switching: string | null;
+  onOpen: (id: string) => void;
+  onBack?: () => void;
+  backLabel?: string;
+  onDone: () => void;
+  error: string | null;
+}) {
   const [type, setType] = useState<ShowType>('podcast');
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
@@ -189,10 +281,48 @@ function ShowSetup({ onDone, error }: { onDone: () => void; error: string | null
   const input = 'mt-1.5 w-full rounded-xl border border-line bg-sunken px-3.5 py-2.5 text-sm outline-none focus:border-accent';
 
   return (
+    <div className="space-y-5">
+      {onBack && (
+        <button type="button" onClick={onBack} className="flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink">
+          <ArrowLeft className="h-4 w-4" /> Back to {backLabel || 'your account'}
+        </button>
+      )}
+
+      {accounts.length > 0 && (
+        <div className="card p-5 sm:p-6">
+          <h2 className="text-lg font-bold">Your accounts</h2>
+          <p className="mt-0.5 text-sm text-muted">Open one to work in it. Recordings, credits and the podcast feed are kept separate for each.</p>
+          <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+            {accounts.map((a) => {
+              const Icon = TYPE_ICONS[a.type] || Radio;
+              const current = a.id === currentId;
+              return (
+                <li key={a.id} className="flex items-center gap-3 rounded-2xl border border-line p-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent-soft text-accent"><Icon className="h-5 w-5" /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-bold">{a.name}</span>
+                    <span className="block text-xs text-muted">
+                      {SHOW_TYPES[a.type]?.label} · {a.role === 'owner' ? 'Owner' : 'Team member'} · {a.active ? 'Plan active' : 'No plan yet'}
+                    </span>
+                  </span>
+                  {current ? (
+                    <span className="chip shrink-0 border-accent/30 bg-accent-soft text-accent">Open now</span>
+                  ) : (
+                    <button type="button" onClick={() => onOpen(a.id)} disabled={switching !== null} className="btn-ghost shrink-0 px-4 py-2 text-xs">
+                      {switching === a.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Open
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
     <div className="card overflow-hidden">
       <div className="grid gap-8 p-7 sm:p-10 lg:grid-cols-[1.2fr_1fr]">
         <div>
-          <p className="eyebrow text-accent">Podcasts &amp; churches</p>
+          <p className="eyebrow text-accent">{accounts.length ? 'Add another account' : 'Podcasts & churches'}</p>
           <h1 className="mt-2 text-3xl font-extrabold tracking-tight sm:text-4xl">
             Record it today, <span className="display italic">live on Spotify tomorrow.</span>
           </h1>
@@ -265,6 +395,7 @@ function ShowSetup({ onDone, error }: { onDone: () => void; error: string | null
           {message && <p className="rounded-2xl bg-danger-soft px-4 py-3 text-sm text-danger">{message}</p>}
         </div>
       </div>
+    </div>
     </div>
   );
 }

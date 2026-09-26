@@ -249,6 +249,15 @@ export interface Show {
   feedUrl: string;
 }
 
+/** One of the podcast or church accounts the user belongs to. */
+export interface ShowAccount {
+  id: string;
+  name: string;
+  type: ShowType;
+  role: 'owner' | 'editor';
+  active: boolean;
+}
+
 export interface ShowMember {
   uid: string;
   email: string;
@@ -290,7 +299,10 @@ export const EMPTY_EPISODE: EpisodeFields = {
   date: new Date().toISOString().slice(0, 10), description: '',
 };
 
-export const getShow = () => apiFetch<{ show: Show | null; members?: ShowMember[] }>('/api/shows');
+export const getShow = () => apiFetch<{ show: Show | null; members?: ShowMember[]; accounts?: ShowAccount[] }>('/api/shows');
+/** Work in another of your accounts, or null for your own plan and credits. */
+export const switchShow = (id: string | null) =>
+  apiFetch<{ success: boolean }>('/api/shows/switch', { method: 'POST', body: JSON.stringify({ id }) });
 export const createShow = (name: string, type: ShowType) =>
   apiFetch<{ id: string }>('/api/shows', { method: 'POST', body: JSON.stringify({ name, type }) });
 export const joinShow = (code: string) => apiFetch<{ id: string }>('/api/shows/join', { method: 'POST', body: JSON.stringify({ code }) });
