@@ -68,6 +68,12 @@ const ALLOWED_ORIGINS = (
 
 const app = express();
 app.disable('x-powered-by');
+
+// Keep-alive for uptime monitors (e.g. UptimeRobot every 5 minutes): registered before every other
+// middleware, so it touches no database or storage and answers with 2 bytes. GET and HEAD both work.
+app.get('/ping', (req, res) => {
+  res.set('Cache-Control', 'no-store').type('text/plain').send('ok');
+});
 app.set('trust proxy', 1);
 app.use(
   helmet({
