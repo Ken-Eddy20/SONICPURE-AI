@@ -1,6 +1,7 @@
 import { auth } from '../firebase';
 
-export const API_BASE: string = import.meta.env.VITE_API_URL || 'http://localhost:3002';
+// In development, calls go through Vite's /api proxy, so the app also works from a phone on the same Wi-Fi.
+export const API_BASE: string = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? '' : 'http://localhost:3002');
 
 export type Plan = 'free' | 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church';
 /** `expired`: the audio was deleted after the plan's keep window (text such as notes stays). */
