@@ -1,60 +1,148 @@
-export type SubscriptionTier = 'payg' | 'pro' | 'unlimited';
+export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church' | 'team_topup' | 'hosting_addon';
 
-export const TIER_DETAILS: Record<SubscriptionTier, {
+export interface TierDetails {
   name: string;
   price: string;
-  priceAmount: number; // For payment integration
+  priceAmount: number;
   period: string;
   description: string;
   features: string[];
   cta: string;
-}> = {
+  credits: string;
+}
+
+export const TIER_DETAILS = {
   payg: {
     name: 'Pay As You Go',
-    price: '$5',
-    priceAmount: 5,
-    period: '150 credits (never expire)',
-    description: 'For occasional creators who need flexibility.',
+    price: 'From $1',
+    priceAmount: 0, // Chosen by the buyer: $1 per 20 credits
+    period: '$1 per 20 credits',
+    credits: 'Buy exactly what you need',
+    description: 'Top up any amount from 20 credits. Credits never expire.',
     features: [
-      '150 credits (never expire)',
-      'Unlimited daily enhances',
-      '30 mins max audio length',
-      'High priority processing',
+      'Credits never expire',
+      '4 enhancements per day',
+      'Files up to 30 minutes',
+      'Noise Removal, Studio Sound, Podcast Polish',
+      'Loudness targets and MP3 / WAV / FLAC / M4A export',
     ],
-    cta: 'Buy Credits',
+    cta: 'Buy credits',
   },
   pro: {
     name: 'Pro',
     price: '$20',
     priceAmount: 20,
     period: '/month',
-    description: 'For professional workflows.',
+    credits: '600 credits',
+    description: 'Full studio quality for weekly creators.',
     features: [
-      '2500 credits / month',
-      'Extract audio from video',
-      '50 mins max audio length',
-      'Advanced noise profiles',
-      'Auto balance of volume',
-      'Auto gain',
+      '600 credits',
+      'Unlimited daily enhancements',
+      'Podcast Polish at full strength: fillers, stutters, mouth clicks, dead air',
+      'Custom Mix: choose every fix yourself',
+      'AI show notes: transcript, summary, chapters, social posts',
+      'Upload video and get cleaned video back',
+      'Files up to 50 minutes',
     ],
-    cta: 'Subscribe Now',
+    cta: 'Go Pro',
   },
-  unlimited: {
-    name: 'Unlimited Studio',
+  audio_master: {
+    name: 'Audio Master',
     price: '$60',
     priceAmount: 60,
     period: '/month',
-    description: 'The ultimate package for studios and heavy users.',
+    credits: '2,000 credits',
+    description: 'For studios and teams processing every day.',
     features: [
-      'Unlimited Credits',
-      'Multiple Uploads',
-      'Highest Tier Enhancement',
-      'Auto balance of volume',
-      'Auto gain',
-      'Audio dereverberation',
-      'Audio restoration',
+      '2,000 credits',
+      'Everything in Pro',
+      'Batch upload: queue several files at once',
+      'No file length limit',
       'Priority support',
     ],
-    cta: 'Get Unlimited',
+    cta: 'Get Audio Master',
   },
+  podcast: {
+    name: 'Podcast',
+    price: '$35',
+    priceAmount: 35,
+    period: '/month',
+    credits: '1,500 shared credits',
+    description: 'Episode studio and podcast for your show and its team.',
+    features: [
+      '1,500 credits shared by up to 5 team members',
+      'Episode Studio: clean audio, intro music kept, title, summary, chapters, social posts',
+      'Your own podcast on Spotify and Apple Podcasts, with seasons, episode numbers and guests',
+      'Transcripts in Twi, Fante, Ga, Ewe, Dagbani, Hausa and more, with English translation',
+      'Captions on episode clips for WhatsApp, TikTok and Reels',
+      'Files up to 3 hours, video uploads, everything in Pro',
+    ],
+    cta: 'Get the Podcast plan',
+  },
+  church: {
+    name: 'Church',
+    price: '$35',
+    priceAmount: 35,
+    period: '/month',
+    credits: '1,500 shared credits',
+    description: 'Sermon studio and podcast for your church media team.',
+    features: [
+      '1,500 credits shared by up to 5 team members',
+      'Sermon Studio: clean audio, worship songs kept, title, summary, chapters, social posts',
+      'Your own church podcast on Spotify and Apple Podcasts',
+      'Transcripts in Twi, Fante, Ga, Ewe, Dagbani, Hausa and more, with English translation',
+      'Captions on sermon clips for WhatsApp, TikTok and Reels',
+      'Files up to 3 hours, video uploads, everything in Pro',
+    ],
+    cta: 'Get the Church plan',
+  },
+} as Record<SubscriptionTier, TierDetails>;
+
+/** Not a plan: extra credits for a team's shared pool (see TEAM_TOPUP_* in shared/processing.js). */
+const TEAM_TOPUP_DETAILS: TierDetails = {
+  name: 'Team top-up',
+  price: '$10',
+  priceAmount: 10,
+  period: 'per 350 credits',
+  credits: '350 credits per pack',
+  description: 'Extra credits for your church or podcast team. They go into the shared pool and never expire.',
+  features: [
+    'Anyone on the team can buy them',
+    'Added to the shared pool straight away',
+    'Your plan and renewal date stay the same',
+    'About 175 minutes of AI cleaning per pack',
+  ],
+  cta: 'Top up team credits',
+};
+TIER_DETAILS.team_topup = TEAM_TOPUP_DETAILS;
+
+/** Not a plan: more podcast hours online (see HOSTING_ADDON_* in shared/processing.js). */
+TIER_DETAILS.hosting_addon = {
+  name: 'Extra podcast space',
+  price: '$3',
+  priceAmount: 3,
+  period: 'per 250 hours, 30 days',
+  credits: '+250 hours online',
+  description: 'Keep more episodes on Spotify and Apple Podcasts on top of the 150 hours in your plan.',
+  features: [
+    '250 more hours of published episodes per block',
+    'Lasts 30 days; renew any time to add another 30',
+    'Anyone on the team can buy it',
+    'If it runs out, nothing is deleted: you just cannot publish more until there is room',
+  ],
+  cta: 'Add podcast space',
+};
+
+export const FREE_PLAN = {
+  name: 'Free',
+  price: '$0',
+  credits: '50 credits on signup',
+  description: 'Try it on a real recording.',
+  features: [
+    '50 free credits',
+    '2 enhancements per day',
+    'Files up to 20 minutes',
+    'Noise Removal, Studio Sound, Podcast Polish',
+    'Loudness targets and all export formats',
+  ],
 };

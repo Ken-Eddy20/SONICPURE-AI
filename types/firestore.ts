@@ -21,7 +21,7 @@ export interface CreditPlanDocument {
 export interface UserDocument {
   email: string;
   displayName: string;
-  plan: 'free' | 'payg' | 'pro' | 'unlimited';
+  plan: 'free' | 'payg' | 'pro' | 'audio_master';
   credits: number;
   creditsUsedThisMonth: number;
   dailyEnhancesUsed: number;

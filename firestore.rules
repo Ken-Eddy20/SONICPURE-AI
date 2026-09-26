@@ -1,42 +1,99 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function ownsUserDoc(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
 
     match /creditPlans/{planId} {
       allow read: if true;
+      allow write: if false;
     }
 
     match /users/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
+      allow read: if ownsUserDoc(userId);
 
-      allow create: if request.auth != null
-                    && request.auth.uid == userId
-                    && request.resource.data.plan in ['free', 'payg', 'pro', 'unlimited']
-                    && request.resource.data.credits is number
-                    && request.resource.data.credits >= 0;
+      allow create: if ownsUserDoc(userId)
+                    && request.resource.data.keys().hasOnly([
+                      'email',
+                      'displayName',
+                      'plan',
+                      'credits',
+                      'creditsUsedThisMonth',
+                      'dailyEnhancesUsed',
+                      'dailyEnhancesDate',
+                      'dailyEnhancesResetAt',
+                      'createdAt',
+                      'billingRenewDate',
+                      'paystackCustomerId',
+                      'isActive'
+                    ])
+                    && request.resource.data.email == request.auth.token.email
+                    && request.resource.data.plan == 'free'
+                    && request.resource.data.credits == 50
+                    && request.resource.data.creditsUsedThisMonth == 0
+                    && request.resource.data.dailyEnhancesUsed == 0
+                    && request.resource.data.paystackCustomerId == null
+                    && request.resource.data.isActive == true;
 
-      allow update: if request.auth != null
-                    && request.auth.uid == userId
-                    && request.resource.data.diff(resource.data).affectedKeys()
-                        .hasOnly(['credits', 'creditsUsedThisMonth', 'dailyEnhancesUsed', 'dailyEnhancesResetAt'])
-                    && request.resource.data.credits is number
-                    && request.resource.data.credits >= 0;
+      allow update, delete: if false;
     }
 
     match /transactions/{transactionId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
     }
 
     match /usageLogs/{logId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
     }
 
     match /audioFiles/{fileId} {
-      allow read: if request.auth != null && resource.data.userId == request.auth.uid;
-      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
-      allow update: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Shows (podcasts and churches): members can read their show (shared credit balance, plan).
+    // All changes go through the API, which checks roles.
+    match /shows/{showId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
+      allow write: if false;
+
+      match /members/{memberId} {
+        allow read: if signedIn()
+                    && request.auth.uid in get(/databases/$(database)/documents/shows/$(showId)).data.memberIds;
+        allow write: if false;
+      }
+    }
+
+    // Served only through the API (which checks show membership and file access).
+    match /episodes/{episodeId} {
+      allow read, write: if false;
+    }
+
+    match /transcripts/{transcriptId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    match /captionJobs/{jobId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Recorder library: served only through the API to its owner.
+    match /recordings/{recordingId} {
+      allow read, write: if false;
+    }
+
+    // Meetings can be confidential: served only through the API to their owner.
+    match /meetings/{meetingId}/{document=**} {
+      allow read, write: if false;
     }
   }
 }

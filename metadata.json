@@ -1,6 +1,6 @@
 {
   "name": "SonicPure AI",
-  "description": "A high-fidelity AI-powered audio noise remover that cleans background noise while preserving the natural tone of your voice and soundscapes. Built with Gemini 2.5 Native Audio.",
+  "description": "AI audio cleanup for creators: removes background noise, filler words, breaths and dead air, and returns transcripts, summaries and social posts. Powered by Cleanvoice AI.",
   "requestFramePermissions": [
     "microphone"
   ]
