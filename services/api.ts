@@ -2,7 +2,7 @@ import { auth } from '../firebase';
 
 export const API_BASE: string = import.meta.env.VITE_API_URL || 'http://localhost:3002';
 
-export type Plan = 'free' | 'payg' | 'pro' | 'audio_master' | 'church';
+export type Plan = 'free' | 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church';
 export type JobStatus = 'uploading' | 'uploaded' | 'processing' | 'processed' | 'failed';
 
 export interface JobOptions {
@@ -57,7 +57,7 @@ export interface AudioJob {
   processedFileUrl: string | null;
   processedIsVideo: boolean;
   durationSeconds: number;
-  churchId?: string | null;
+  showId?: string | null;
   fileSizeMB: number;
   creditsUsed: number;
   qualityLevel: number | null;
@@ -216,21 +216,26 @@ export const startCaptions = (body: {
   size: CaptionJob['size'];
 }) => apiFetch<{ id: string; creditsUsed: number }>('/api/captions', { method: 'POST', body: JSON.stringify(body) });
 
-// ─── Church ──────────────────────────────────────────────────────
+// ─── Shows (podcasts and churches) ───────────────────────────────
+
+export type ShowType = 'church' | 'podcast' | 'organization';
 
 export interface PodcastSettings {
   title?: string;
   author?: string;
   description?: string;
   language?: string;
+  category?: string;
   subcategory?: string;
+  explicit?: boolean;
   email?: string;
   artworkUrl?: string | null;
 }
 
-export interface Church {
+export interface Show {
   id: string;
   name: string;
+  type: ShowType;
   plan: string;
   active: boolean;
   credits: number;
@@ -244,7 +249,7 @@ export interface Church {
   feedUrl: string;
 }
 
-export interface ChurchMember {
+export interface ShowMember {
   uid: string;
   email: string;
   displayName: string;
@@ -252,14 +257,17 @@ export interface ChurchMember {
   joinedAt: string | null;
 }
 
-export interface Sermon {
+export interface Episode {
   id: string;
   fileId: string;
   title: string;
-  preacher: string;
-  date: string;
+  speaker: string;
+  guests: string;
   series: string;
-  scripture: string;
+  reference: string;
+  season: number | null;
+  episode: number | null;
+  date: string;
   description: string;
   status: 'draft' | 'published';
   createdAt: string | null;
@@ -275,29 +283,35 @@ export interface Sermon {
   } | null;
 }
 
-export type SermonFields = Pick<Sermon, 'title' | 'preacher' | 'date' | 'series' | 'scripture' | 'description'>;
+export type EpisodeFields = Pick<Episode, 'title' | 'speaker' | 'guests' | 'series' | 'reference' | 'season' | 'episode' | 'date' | 'description'>;
 
-export const getChurch = () => apiFetch<{ church: Church | null; members?: ChurchMember[] }>('/api/church');
-export const createChurch = (name: string) => apiFetch<{ id: string }>('/api/church', { method: 'POST', body: JSON.stringify({ name }) });
-export const joinChurch = (code: string) => apiFetch<{ id: string }>('/api/church/join', { method: 'POST', body: JSON.stringify({ code }) });
-export const leaveChurch = () => apiFetch<{ success: boolean }>('/api/church/leave', { method: 'POST' });
-export const removeChurchMember = (uid: string) => apiFetch<{ success: boolean }>(`/api/church/members/${uid}`, { method: 'DELETE' });
-export const regenerateInvite = () => apiFetch<{ inviteCode: string }>('/api/church/invite', { method: 'POST' });
-export const updateChurch = (body: { name?: string; podcast?: PodcastSettings }) =>
-  apiFetch<{ success: boolean }>('/api/church', { method: 'PATCH', body: JSON.stringify(body) });
-export const uploadChurchArtwork = (file: File) => {
-  const form = new FormData();
-  form.append('artwork', file, file.name);
-  return apiFetch<{ artworkUrl: string }>('/api/church/artwork', { method: 'POST', body: form });
+export const EMPTY_EPISODE: EpisodeFields = {
+  title: '', speaker: '', guests: '', series: '', reference: '', season: null, episode: null,
+  date: new Date().toISOString().slice(0, 10), description: '',
 };
 
-export const listSermons = () => apiFetch<{ sermons: Sermon[] }>('/api/church/sermons');
-export const getSermon = (id: string) => apiFetch<{ sermon: Sermon; job: AudioJob | null }>(`/api/church/sermons/${id}`);
-export const createSermon = (fileId: string, fields: SermonFields) =>
-  apiFetch<{ id: string }>('/api/church/sermons', { method: 'POST', body: JSON.stringify({ fileId, ...fields }) });
-export const updateSermon = (id: string, body: Partial<SermonFields> & { status?: Sermon['status'] }) =>
-  apiFetch<{ success: boolean }>(`/api/church/sermons/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
-export const deleteSermon = (id: string) => apiFetch<{ success: boolean }>(`/api/church/sermons/${id}`, { method: 'DELETE' });
+export const getShow = () => apiFetch<{ show: Show | null; members?: ShowMember[] }>('/api/shows');
+export const createShow = (name: string, type: ShowType) =>
+  apiFetch<{ id: string }>('/api/shows', { method: 'POST', body: JSON.stringify({ name, type }) });
+export const joinShow = (code: string) => apiFetch<{ id: string }>('/api/shows/join', { method: 'POST', body: JSON.stringify({ code }) });
+export const leaveShow = () => apiFetch<{ success: boolean }>('/api/shows/leave', { method: 'POST' });
+export const removeShowMember = (uid: string) => apiFetch<{ success: boolean }>(`/api/shows/members/${uid}`, { method: 'DELETE' });
+export const regenerateInvite = () => apiFetch<{ inviteCode: string }>('/api/shows/invite', { method: 'POST' });
+export const updateShow = (body: { name?: string; type?: ShowType; podcast?: PodcastSettings }) =>
+  apiFetch<{ success: boolean }>('/api/shows', { method: 'PATCH', body: JSON.stringify(body) });
+export const uploadShowArtwork = (file: File) => {
+  const form = new FormData();
+  form.append('artwork', file, file.name);
+  return apiFetch<{ artworkUrl: string }>('/api/shows/artwork', { method: 'POST', body: form });
+};
+
+export const listEpisodes = () => apiFetch<{ episodes: Episode[] }>('/api/shows/episodes');
+export const getEpisode = (id: string) => apiFetch<{ episode: Episode; job: AudioJob | null }>(`/api/shows/episodes/${id}`);
+export const createEpisode = (fileId: string, fields: EpisodeFields) =>
+  apiFetch<{ id: string }>('/api/shows/episodes', { method: 'POST', body: JSON.stringify({ fileId, ...fields }) });
+export const updateEpisode = (id: string, body: Partial<EpisodeFields> & { status?: Episode['status'] }) =>
+  apiFetch<{ success: boolean }>(`/api/shows/episodes/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+export const deleteEpisode = (id: string) => apiFetch<{ success: boolean }>(`/api/shows/episodes/${id}`, { method: 'DELETE' });
 
 // ─── Meetings ────────────────────────────────────────────────────
 

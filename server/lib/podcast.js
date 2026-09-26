@@ -2,6 +2,7 @@
  * Podcast RSS 2.0 feed with the iTunes namespace, accepted by Apple Podcasts,
  * Spotify, Google/YouTube Music and every podcast app.
  */
+import { showType } from '../../shared/processing.js';
 
 const esc = (value) =>
   String(value ?? '')
@@ -21,39 +22,47 @@ function duration(seconds) {
 }
 
 /**
- * @param {object} church Church doc (name, podcast settings)
- * @param {object[]} episodes Published sermons joined with their audio file
+ * @param {object} show Show doc (name, type, podcast settings)
+ * @param {object[]} episodes Published episodes joined with their audio file
  * @param {{feedUrl: string, siteUrl: string}} urls
  */
-export function buildPodcastFeed(church, episodes, urls) {
-  const p = church.podcast || {};
-  const title = p.title || church.name;
-  const author = p.author || church.name;
-  const description = p.description || `Sermons and teachings from ${church.name}.`;
+export function buildPodcastFeed(show, episodes, urls) {
+  const t = showType(show.type);
+  const p = show.podcast || {};
+  const title = p.title || show.name;
+  const author = p.author || show.name;
+  const description =
+    p.description || (show.type === 'church' ? `Sermons and teachings from ${show.name}.` : `Episodes from ${show.name}.`);
   const language = p.language || 'en';
-  const category = p.category || 'Religion & Spirituality';
-  const subcategory = p.subcategory || 'Christianity';
+  const category = p.category || t.category;
+  const subcategory = p.subcategory ?? t.subcategory;
+  const explicit = p.explicit ? 'true' : 'false';
 
   const items = episodes
     .map((e) => {
       const summary = [e.description, e.summary?.summary].filter(Boolean).join('\n\n') || e.title;
       const extra = [
-        e.preacher && `Preacher: ${e.preacher}`,
-        e.scripture && `Scripture: ${e.scripture}`,
-        e.series && `Series: ${e.series}`,
-      ].filter(Boolean).join('\n');
+        e.speaker && `${t.speaker}: ${e.speaker}`,
+        e.guests && `Guests: ${e.guests}`,
+        e.reference && `${t.reference || 'Reference'}: ${e.reference}`,
+        e.series && `${t.series || 'Series'}: ${e.series}`,
+      ]
+        .filter(Boolean)
+        .join('\n');
       const chapters = (e.summary?.chapters || []).map((c) => `${duration(c.start)} ${c.title}`).join('\n');
       const body = [summary, extra, chapters && `Chapters:\n${chapters}`].filter(Boolean).join('\n\n');
       return `    <item>
       <title>${esc(e.title)}</title>
       <description>${cdata(body)}</description>
       <itunes:summary>${cdata(summary)}</itunes:summary>
-      ${e.preacher ? `<itunes:author>${esc(e.preacher)}</itunes:author>` : ''}
+      ${e.speaker ? `<itunes:author>${esc(e.speaker)}</itunes:author>` : ''}
+      ${e.season ? `<itunes:season>${Number(e.season)}</itunes:season>` : ''}
+      ${e.episode ? `<itunes:episode>${Number(e.episode)}</itunes:episode>` : ''}
       <enclosure url="${esc(e.audioUrl)}" length="${Number(e.audioBytes) || 0}" type="audio/mpeg"/>
       <guid isPermaLink="false">${esc(e.id)}</guid>
       <pubDate>${new Date(e.pubDate).toUTCString()}</pubDate>
       <itunes:duration>${duration(e.durationSeconds)}</itunes:duration>
-      <itunes:explicit>false</itunes:explicit>
+      <itunes:explicit>${explicit}</itunes:explicit>
       <itunes:episodeType>full</itunes:episodeType>
     </item>`;
     })
@@ -67,11 +76,11 @@ export function buildPodcastFeed(church, episodes, urls) {
     <atom:link href="${esc(urls.feedUrl)}" rel="self" type="application/rss+xml"/>
     <description>${cdata(description)}</description>
     <language>${esc(language)}</language>
-    <copyright>${esc(`© ${new Date().getFullYear()} ${church.name}`)}</copyright>
+    <copyright>${esc(`© ${new Date().getFullYear()} ${show.name}`)}</copyright>
     <itunes:author>${esc(author)}</itunes:author>
     <itunes:summary>${cdata(description)}</itunes:summary>
     <itunes:type>episodic</itunes:type>
-    <itunes:explicit>false</itunes:explicit>
+    <itunes:explicit>${explicit}</itunes:explicit>
     ${p.artworkUrl ? `<itunes:image href="${esc(p.artworkUrl)}"/>\n    <image><url>${esc(p.artworkUrl)}</url><title>${esc(title)}</title><link>${esc(urls.siteUrl)}</link></image>` : ''}
     <itunes:category text="${esc(category)}">${subcategory ? `<itunes:category text="${esc(subcategory)}"/>` : ''}</itunes:category>
     ${p.email ? `<itunes:owner><itunes:name>${esc(author)}</itunes:name><itunes:email>${esc(p.email)}</itunes:email></itunes:owner>` : ''}

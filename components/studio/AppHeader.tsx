@@ -6,12 +6,12 @@ import ThemeToggle from '../ui/ThemeToggle';
 import type { Plan } from '../../services/api';
 import { PLAN_NAMES } from '../../shared/processing.js';
 
-export type StudioView = 'studio' | 'meetings' | 'church' | 'plans';
+export type StudioView = 'studio' | 'meetings' | 'podcast' | 'plans';
 
 const VIEWS: [StudioView, string][] = [
   ['studio', 'Studio'],
   ['meetings', 'Meetings'],
-  ['church', 'Church'],
+  ['podcast', 'Podcast'],
   ['plans', 'Plans'],
 ];
 
@@ -21,14 +21,14 @@ interface AppHeaderProps {
   user: User;
   plan: Plan;
   credits: number | null;
-  /** True when credits come from the church's shared pool. */
-  churchBilling?: boolean;
+  /** True when credits come from a podcast or church team's shared pool. */
+  showBilling?: boolean;
   view: StudioView;
   onView: (view: StudioView) => void;
   onSignOut: () => void;
 }
 
-export default function AppHeader({ user, plan, credits, churchBilling, view, onView, onSignOut }: AppHeaderProps) {
+export default function AppHeader({ user, plan, credits, showBilling, view, onView, onSignOut }: AppHeaderProps) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -77,7 +77,7 @@ export default function AppHeader({ user, plan, credits, churchBilling, view, on
           >
             <Coins className="h-4 w-4 text-accent" />
             {credits === null ? '…' : Math.max(0, credits).toLocaleString()}
-            <span className="hidden text-muted md:inline">{churchBilling ? 'church credits' : 'credits'}</span>
+            <span className="hidden text-muted md:inline">{showBilling ? 'team credits' : 'credits'}</span>
           </button>
           <ThemeToggle />
 

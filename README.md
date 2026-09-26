@@ -17,18 +17,18 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 - **Plans:** Free (50 credits), Pay As You Go ($1 per 20 credits, any amount), Pro ($20, 600 credits), Audio Master ($60, 2,000 credits). Prices in USD, charged in GHS at the live rate via Paystack.
 - Credit cost shown before every job; failed jobs refund automatically.
 
-## Recorder (free, in the Church tab)
+## Recorder (free, in the Podcast tab)
 
-- **Record live** in the browser from a mic or church mixer: input picker, level meter with clipping and too-quiet warnings, pause/resume, screen kept awake. Every 5 seconds the recording is saved in the browser (IndexedDB), so a crash or closed tab can be recovered from the Recorder page.
+- **Record live** in the browser from a mic, USB interface or mixer: input picker, level meter with clipping and too-quiet warnings, pause/resume, screen kept awake. Every 5 seconds the recording is saved in the browser (IndexedDB), so a crash or closed tab can be recovered from the Recorder page.
 - **Edit** recordings or any opened audio/video file: waveform with zoom and overview, drag or type exact selections, crop, cut out, mute, volume in dB, normalise, fade in/out, insert silence, unlimited undo/redo (Space, Delete, Ctrl+Z/Y). Editing is non-destructive (`services/audioEdit.ts`): the audio is decoded once and edits are a list of clips, so memory stays flat. Files up to 3 hours; long ones are edited at speech quality to fit in memory.
 - **Details**: cover art, title, artist, album, album artist, composer, genre, year, track and comment are written into the MP3 as ID3 tags (`browser-id3-writer`). MP3 encoding runs in a Web Worker (`@breezystack/lamejs`, LGPL) in 5-minute windows.
 - **Save, download, share**: download the MP3; share to WhatsApp or Telegram (the file itself on phones, a link to the saved copy on computers); save to the cloud library (`recordings` collection; free plan keeps ${FREE_RECORDING_LIMIT} = 10 recordings).
-- **Paid**: "Clean with AI" (needs a paid plan; uses credits) and "Publish to Spotify & Apple Podcasts" (Church plan: cleans it, writes sermon notes and creates a sermon for the podcast feed). Both reuse the saved file without re-uploading.
+- **Paid**: "Clean with AI" (needs a paid plan; uses credits) and "Publish to Spotify & Apple Podcasts" (Podcast or Church plan: cleans it, writes show notes and creates an episode for the podcast feed). Both reuse the saved file without re-uploading.
 
 ## Meetings
 
 - Upload meeting recordings (audio or video) up to 3 GB. The browser sends the file in 8 MB pieces with automatic retries; the server keeps only a compact speech MP3 (about 14 MB per hour), never the video.
-- Length limits per plan: Free 60 min, PAYG 3 h, Pro 4 h, Church 4 h, Audio Master 8 h (`MEETING_MAX_MINUTES` in `shared/processing.js`).
+- Length limits per plan: Free 60 min, PAYG 3 h, Pro 4 h, Podcast 4 h, Church 4 h, Audio Master 8 h (`MEETING_MAX_MINUTES` in `shared/processing.js`).
 - English meetings: Cleanvoice transcription with speaker labels (rename speakers in the app). If Cleanvoice is unavailable (e.g. out of credits), the server falls back to Khaya's African English model.
 - Local-language meetings: Khaya transcription in 5-minute pieces, optional English translation.
 - Minutes: Claude (`claude-opus-5`) writes a summary, key points, decisions, action items (owner, due) and topics as structured JSON from the English transcript. Needs `ANTHROPIC_API_KEY`. If the minutes step fails, only its credits are refunded and the transcript is still delivered.
@@ -36,12 +36,21 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 - Exports: Word (.doc), TXT, SRT, VTT; minutes copy-ready for WhatsApp or email.
 - Stored in `meetings/{id}` with the transcript split across `meetings/{id}/parts` (keeps each document under Firestore's 1 MB limit). API-only access.
 
-## Church package
+## Podcasts and churches (Podcast tab)
 
-- **Church account:** one owner plus up to 5 team members joining with an invite code (WhatsApp share button). Credits come from a shared pool on the church.
-- **Church plan:** $35/month, 1,500 shared credits, files up to 150 minutes, all Pro features. Paid by the church owner via Paystack; credits go to the church, not the user.
-- **Sermon Studio:** upload a service recording; it is cleaned with Podcast Polish at podcast loudness, worship songs protected, with title, summary, chapters and social posts.
-- **Podcast feed:** `GET /feeds/church/<churchId>.xml` is a public RSS feed (Apple/Spotify format). Publishing a sermon adds it to the feed.
+One engine for every "show". When creating the account the owner picks a type, and the labels follow it (`SHOW_TYPES` in `shared/processing.js`):
+
+| Type | Items | Speaker | Extra fields | Default category |
+|---|---|---|---|---|
+| Church or ministry | Sermons | Preacher | Series, Scripture | Religion & Spirituality › Christianity |
+| Podcast show | Episodes | Host | Guests, season and episode numbers | Society & Culture |
+| School or organisation | Episodes | Speaker | Guests, series, numbering | Education |
+
+- **Team:** one owner plus members joining with an invite code (WhatsApp share button). Credits come from a shared pool on the show. Team size: 2 without a plan or on Podcast, 5 on Church.
+- **Plans:** Podcast $15/month, 600 shared credits, 2 people, files up to 4 hours. Church $35/month, 1,500 shared credits, 5 people. Paid by the owner via Paystack; credits go to the show, not the user. Either plan works with any type.
+- **Episode studio:** upload a recording; it is cleaned with Podcast Polish at podcast loudness, music protected, with title, summary, chapters and social posts.
+- **Podcast feed:** `GET /feeds/show/<showId>.xml` is a public RSS feed (Apple/Spotify format) with category, subcategory, explicit flag, seasons and episode numbers. `/feeds/church/<id>.xml` still works for feeds submitted before the rename.
+- The type can be changed later in Podcast settings; the feed wording follows.
 
 ## Local-language transcripts and captions (Khaya AI)
 
@@ -55,18 +64,20 @@ AI audio cleanup for podcasters, churches, educators and video creators. Upload 
 
 | Collection | Written by | Purpose |
 |---|---|---|
-| `users` | client (create only), server | Plan, credits, daily counter, `churchId` |
-| `creditPlans` | seed script | Plan limits and prices (`free`, `payg`, `pro`, `audio_master`, `church`) |
-| `audioFiles` | server | Uploads and cleaning jobs (`churchId` when uploaded by a church member) |
-| `churches` (+ `members`) | server | Church account, shared credits, invite code, podcast settings |
-| `sermons` | server | Sermon details linked to an `audioFiles` doc, draft/published |
+| `users` | client (create only), server | Plan, credits, daily counter, `showId` |
+| `creditPlans` | seed script | Plan limits and prices (`free`, `payg`, `pro`, `audio_master`, `podcast`, `church`) |
+| `audioFiles` | server | Uploads and cleaning jobs (`showId` when uploaded by a team member) |
+| `shows` (+ `members`) | server | Podcast or church account: type, plan, shared credits, invite code, podcast settings |
+| `episodes` | server | Episode or sermon details linked to an `audioFiles` doc, draft/published |
 | `transcripts` | server | Khaya transcripts and translations with timed segments |
 | `captionJobs` | server | Burned-in caption renders |
 | `recordings` | server | Recorder library: edited, tagged MP3s with cover art |
 | `meetings` (+ `parts`) | server | Meeting uploads, transcripts, translations, speaker names and minutes |
 | `transactions`, `usageLogs` | server | Payments and usage history |
 
-Seed or update a single plan without touching the others: `npx tsx scripts/seedFirestore.ts --only church`
+Seed or update a single plan without touching the others: `npx tsx scripts/seedFirestore.ts --only podcast`
+
+Databases created before shows existed: `node scripts/migrateChurchesToShows.mjs` moves `churches`/`sermons` to `shows`/`episodes` and renames `churchId` to `showId` (already run on the live database).
 
 ## How processing works
 

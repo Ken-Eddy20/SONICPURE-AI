@@ -9,7 +9,7 @@ import Composer, { type PlanLimits, type QueuedFile } from './Composer';
 import JobDetail, { type ClientJob } from './JobDetail';
 import Library from './Library';
 import Pricing from '../Pricing';
-import ChurchView from '../church/ChurchView';
+import PodcastView from '../podcast/PodcastView';
 import MeetingsView from '../meetings/MeetingsView';
 import { PLAN_NAMES } from '../../shared/processing.js';
 
@@ -20,8 +20,8 @@ export interface UserSnapshot {
   dailyEnhancesUsed: number;
   /** UTC day ("YYYY-MM-DD") the daily counter belongs to. */
   dailyEnhancesDate: string;
-  /** Credits and plan come from the church's shared pool. */
-  churchBilling: boolean;
+  /** Credits and plan come from a podcast or church team's shared pool. */
+  showBilling: boolean;
 }
 
 interface StudioProps {
@@ -180,7 +180,7 @@ export default function Studio({ user, account, onChoosePlan, onSignOut }: Studi
         user={user}
         plan={account.plan}
         credits={account.credits}
-        churchBilling={account.churchBilling}
+        showBilling={account.showBilling}
         view={view}
         onView={setView}
         onSignOut={onSignOut}
@@ -199,9 +199,9 @@ export default function Studio({ user, account, onChoosePlan, onSignOut }: Studi
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
           <MeetingsView credits={account.credits} onUpgrade={goPlans} />
         </main>
-      ) : view === 'church' ? (
+      ) : view === 'podcast' ? (
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
-          <ChurchView plan={account.plan} churchActive={account.churchBilling} onChoosePlan={onChoosePlan} onChurchChanged={() => undefined} />
+          <PodcastView plan={account.plan} showActive={account.showBilling} onChoosePlan={onChoosePlan} />
         </main>
       ) : view === 'studio' ? (
         <main className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 sm:py-8 lg:grid-cols-[minmax(0,1fr)_340px]">

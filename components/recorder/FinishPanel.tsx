@@ -2,17 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Check, CloudUpload, Download, ImagePlus, Loader2, Lock, Podcast, Send, Sparkles, X } from 'lucide-react';
 import {
   ApiError,
-  createSermon,
+  createEpisode,
   recordingToStudio,
   saveRecording,
   startProcessing,
   type JobOptions,
   type Plan,
   type SavedRecording,
+  type ShowType,
 } from '../../services/api';
 import { totalLength, type EditState } from '../../services/audioEdit';
 import { encodeMp3, prepareCover, safeFileName, tagMp3, type AudioMetadata } from '../../services/mp3Export';
-import { SERMON_FEATURE, SERMON_OPTIONS, DEFAULT_OPTIONS } from '../../shared/processing.js';
+import { EPISODE_FEATURE, EPISODE_OPTIONS, DEFAULT_OPTIONS, showType as showLabels } from '../../shared/processing.js';
 import { formatBytes } from '../../services/media';
 import { fmtTime } from './AudioEditor';
 
@@ -24,17 +25,18 @@ interface Props {
   /** Updater form, so quick successive edits never overwrite each other. */
   onMetaChange: (update: (meta: AudioMetadata) => AudioMetadata, coverUrl?: string | null) => void;
   plan: Plan;
-  churchActive: boolean;
+  showActive: boolean;
+  showType: ShowType | null;
   onBack: () => void;
   onSaved: (rec: SavedRecording) => void;
-  onUpgrade: (tier?: 'payg' | 'church') => void;
+  onUpgrade: (tier?: 'payg' | 'show') => void;
 }
 
 const GENRES = ['Gospel', 'Sermon', 'Worship', 'Choir', 'Praise', 'Teaching', 'Podcast', 'Speech', 'Highlife', 'Afrobeats', 'Hiplife', 'Other'];
 
 type Busy = null | 'encode' | 'save' | 'whatsapp' | 'telegram' | 'clean' | 'publish';
 
-export default function FinishPanel({ source, state, meta, coverUrl, onMetaChange, plan, churchActive, onBack, onSaved, onUpgrade }: Props) {
+export default function FinishPanel({ source, state, meta, coverUrl, onMetaChange, plan, showActive, showType, onBack, onSaved, onUpgrade }: Props) {
   const [busy, setBusy] = useState<Busy>(null);
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
@@ -145,22 +147,27 @@ export default function FinishPanel({ source, state, meta, coverUrl, onMetaChang
 
   const publish = () =>
     run('publish', async () => {
-      if (!churchActive) {
-        onUpgrade('church');
+      if (!showActive) {
+        onUpgrade('show');
         return;
       }
       const rec = await ensureSaved();
       const { fileId } = await recordingToStudio(rec.id);
-      await startProcessing(fileId, SERMON_FEATURE, SERMON_OPTIONS as JobOptions);
-      await createSermon(fileId, {
-        title: meta.title || 'Sermon',
-        preacher: meta.artist,
+      await startProcessing(fileId, EPISODE_FEATURE, EPISODE_OPTIONS as JobOptions);
+      const t = showLabels(showType);
+      const track = parseInt(meta.track, 10);
+      await createEpisode(fileId, {
+        title: meta.title || t.item,
+        speaker: meta.artist,
+        guests: '',
+        series: t.series ? meta.album : '',
+        reference: '',
+        season: null,
+        episode: t.numbered && Number.isFinite(track) && track > 0 ? track : null,
         date: new Date().toISOString().slice(0, 10),
-        series: meta.album,
-        scripture: '',
         description: meta.comment,
       });
-      return 'Sent to Sermon Studio. It is being cleaned now; publish it to your podcast from Church → Sermons when it is ready.';
+      return `Sent to your podcast. It is being cleaned now; publish it from Podcast → ${t.items} when it is ready.`;
     });
 
   const pickCover = async (file?: File) => {
@@ -217,7 +224,7 @@ export default function FinishPanel({ source, state, meta, coverUrl, onMetaChang
               <input value={meta.title} onChange={set('title')} className={input} placeholder="e.g. Sunday Service, 21 September" maxLength={150} />
             </label>
             <label className="block text-xs font-semibold text-muted">
-              Artist / preacher / choir
+              Artist / host / preacher
               <input value={meta.artist} onChange={set('artist')} className={input} placeholder="e.g. Rev. Mensah" maxLength={150} />
             </label>
             <label className="block text-xs font-semibold text-muted">
@@ -225,7 +232,7 @@ export default function FinishPanel({ source, state, meta, coverUrl, onMetaChang
               <input value={meta.album} onChange={set('album')} className={input} placeholder="e.g. Walking by Faith" maxLength={150} />
             </label>
             <label className="block text-xs font-semibold text-muted">
-              Album artist / church
+              Album artist / show / church
               <input value={meta.albumArtist} onChange={set('albumArtist')} className={input} maxLength={150} />
             </label>
             <label className="block text-xs font-semibold text-muted">
@@ -303,9 +310,9 @@ export default function FinishPanel({ source, state, meta, coverUrl, onMetaChang
             <PaidAction
               icon={<Podcast className="h-4 w-4" />}
               title="Publish to Spotify & Apple Podcasts"
-              text="Cleans it, writes the sermon notes and adds it to your church podcast."
-              locked={!churchActive}
-              lockedText="Church plan"
+              text={showType === 'church' ? 'Cleans it, writes the sermon notes and adds it to your church podcast.' : 'Cleans it, writes the show notes and adds it to your podcast.'}
+              locked={!showActive}
+              lockedText="Podcast or Church plan"
               busy={busy === 'publish'}
               disabled={working}
               onClick={publish}

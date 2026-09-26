@@ -58,21 +58,21 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Church accounts: members can read their church (shared credit balance, plan).
+    // Shows (podcasts and churches): members can read their show (shared credit balance, plan).
     // All changes go through the API, which checks roles.
-    match /churches/{churchId} {
+    match /shows/{showId} {
       allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
       allow write: if false;
 
       match /members/{memberId} {
         allow read: if signedIn()
-                    && request.auth.uid in get(/databases/$(database)/documents/churches/$(churchId)).data.memberIds;
+                    && request.auth.uid in get(/databases/$(database)/documents/shows/$(showId)).data.memberIds;
         allow write: if false;
       }
     }
 
-    // Served only through the API (which checks church membership and file access).
-    match /sermons/{sermonId} {
+    // Served only through the API (which checks show membership and file access).
+    match /episodes/{episodeId} {
       allow read, write: if false;
     }
 

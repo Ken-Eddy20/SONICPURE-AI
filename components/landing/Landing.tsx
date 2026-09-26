@@ -89,7 +89,7 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
           <nav className="hidden items-center gap-7 text-sm font-semibold text-muted md:flex">
             <a href="#fixes" className="hover:text-ink">What it fixes</a>
             <a href="#meetings" className="hover:text-ink">Meetings</a>
-            <a href="#church" className="hover:text-ink">For churches</a>
+            <a href="#church" className="hover:text-ink">Churches &amp; podcasts</a>
             <a href="#languages" className="hover:text-ink">Local languages</a>
             <a href="#pricing" className="hover:text-ink">Pricing</a>
             <a href="#faq" className="hover:text-ink">FAQ</a>
@@ -323,6 +323,21 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
                   </li>
                 ))}
               </ul>
+            </div>
+            <div id="podcasts" className="flex scroll-mt-20 flex-col gap-5 border-t border-white/10 p-8 sm:flex-row sm:items-center sm:justify-between sm:px-12">
+              <div className="flex items-start gap-4">
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-white/10"><Radio className="h-5 w-5 text-accent" /></span>
+                <div>
+                  <p className="font-bold">Not a church? Run a podcast.</p>
+                  <p className="mt-1 max-w-xl text-sm opacity-70">
+                    Same studio for talk shows, interviews and school lectures: seasons and episode numbers, guests, any Apple
+                    category, and a co-host on one shared credit pool.
+                  </p>
+                </div>
+              </div>
+              <button type="button" onClick={() => onChoosePlan('podcast')} className="btn-ghost shrink-0 border-white/25 px-6 py-3 text-bg hover:bg-white/10">
+                Podcast plan, $15/month <ArrowRight className="h-4 w-4" />
+              </button>
             </div>
           </div>
         </section>

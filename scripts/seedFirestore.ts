@@ -85,6 +85,24 @@ const creditPlans: Record<string, Record<string, unknown>> = {
     isActive: true,
     qualityLevel: 100,
   },
+  podcast: {
+    planId: 'podcast',
+    name: 'Podcast',
+    tagline: 'Record, clean and publish your show to Spotify and Apple Podcasts',
+    price: 15,
+    billingCycle: 'monthly',
+    credits: 600,
+    isUnlimited: false,
+    maxDailyEnhances: -1,
+    maxAudioLengthMins: 180,
+    processingSpeed: 'high_priority',
+    extractAudioFromVideo: true,
+    multipleUploads: true,
+    advancedNoiseProfiles: true,
+    maxMembers: 2,
+    isActive: true,
+    qualityLevel: 100,
+  },
   church: {
     planId: 'church',
     name: 'Church',
@@ -132,8 +150,8 @@ async function seed() {
   console.log('  - transactions   (on payment)');
   console.log('  - usageLogs      (on audio processing)');
   console.log('  - audioFiles     (on file upload)');
-  console.log('  - churches       (Church tab: church account, members subcollection)');
-  console.log('  - sermons        (Church tab: sermons linked to audioFiles)');
+  console.log('  - shows          (Podcast tab: podcast/church account, members subcollection)');
+  console.log('  - episodes       (Podcast tab: episodes/sermons linked to audioFiles)');
   console.log('  - transcripts    (local-language transcripts and translations)');
   console.log('  - captionJobs    (burned-in video captions)');
   console.log('  - meetings       (meeting transcripts and minutes; parts subcollection)');

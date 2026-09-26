@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, Download, FolderOpen, LifeBuoy, Mic, Music, Send, Trash2 } from 'lucide-react';
-import { ApiError, deleteRecording, listRecordings, type Plan, type SavedRecording } from '../../services/api';
+import { ApiError, deleteRecording, listRecordings, type Plan, type SavedRecording, type ShowType } from '../../services/api';
 import {
   MAX_EDIT_SECONDS, computeSourcePeaks, decodeRateFor, initialState, type EditState, type SourcePeaks,
 } from '../../services/audioEdit';
@@ -13,8 +13,11 @@ import FinishPanel from './FinishPanel';
 
 interface Props {
   plan: Plan;
-  churchActive: boolean;
-  onUpgrade: (tier?: 'payg' | 'church') => void;
+  /** The user's podcast or church team has an active plan. */
+  showActive: boolean;
+  /** The team's type, or null when the user has no team yet. */
+  showType: ShowType | null;
+  onUpgrade: (tier?: 'payg' | 'show') => void;
 }
 
 type Screen = 'home' | 'record' | 'loading' | 'edit' | 'finish';
@@ -28,7 +31,7 @@ interface Project {
 
 const HISTORY_LIMIT = 100;
 
-export default function RecorderStudio({ plan, churchActive, onUpgrade }: Props) {
+export default function RecorderStudio({ plan, showActive, showType, onUpgrade }: Props) {
   const [screen, setScreen] = useState<Screen>('home');
   const [loadingLabel, setLoadingLabel] = useState('');
   const [project, setProject] = useState<Project | null>(null);
@@ -151,7 +154,8 @@ export default function RecorderStudio({ plan, churchActive, onUpgrade }: Props)
           if (url !== undefined) setCoverUrl(url);
         }}
         plan={plan}
-        churchActive={churchActive}
+        showActive={showActive}
+        showType={showType}
         onBack={() => setScreen('edit')}
         onSaved={(rec) => {
           if (project.sessionId) deleteSession(project.sessionId).then(refresh);
@@ -172,7 +176,7 @@ export default function RecorderStudio({ plan, churchActive, onUpgrade }: Props)
               Record, edit and share, <span className="display italic">right in your browser.</span>
             </h2>
             <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-              Record the service live or open an existing file. Trim the start and end, cut out a section, fix the volume,
+              Record live or open an existing file. Trim the start and end, cut out a section, fix the volume,
               add cover art and song details, then download or send it on WhatsApp and Telegram.
             </p>
           </div>
@@ -181,7 +185,7 @@ export default function RecorderStudio({ plan, churchActive, onUpgrade }: Props)
               <span className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-danger text-white"><Mic className="h-5 w-5" /></span>
               <span>
                 <span className="block font-bold">Record live</span>
-                <span className="block text-xs opacity-70">From a mic or the church mixer</span>
+                <span className="block text-xs opacity-70">From a mic, USB interface or mixer</span>
               </span>
             </button>
             <button type="button" onClick={() => fileInput.current?.click()} className="flex items-center gap-4 rounded-3xl border border-line bg-surface p-5 text-left hover:border-accent">

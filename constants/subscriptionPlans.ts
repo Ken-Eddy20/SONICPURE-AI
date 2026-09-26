@@ -1,4 +1,4 @@
-export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'church';
+export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church';
 
 export interface TierDetails {
   name: string;
@@ -52,7 +52,7 @@ export const TIER_DETAILS: Record<SubscriptionTier, TierDetails> = {
     priceAmount: 60,
     period: '/month',
     credits: '2,000 credits',
-    description: 'For studios, churches and teams processing every day.',
+    description: 'For studios and teams processing every day.',
     features: [
       '2,000 credits',
       'Everything in Pro',
@@ -61,6 +61,23 @@ export const TIER_DETAILS: Record<SubscriptionTier, TierDetails> = {
       'Priority support',
     ],
     cta: 'Get Audio Master',
+  },
+  podcast: {
+    name: 'Podcast',
+    price: '$15',
+    priceAmount: 15,
+    period: '/month',
+    credits: '600 shared credits',
+    description: 'Your own show on Spotify and Apple Podcasts, from record to publish.',
+    features: [
+      '600 credits shared by you and a co-host (2 people)',
+      'Episode Studio: clean audio, intro music kept, title, summary, chapters, social posts',
+      'Your own podcast feed on Spotify and Apple Podcasts, one-click publish',
+      'Seasons, episode numbers, guests and any Apple category',
+      'Transcripts in English, Twi, Ga, Ewe and more',
+      'Episodes up to 4 hours, video uploads',
+    ],
+    cta: 'Get the Podcast plan',
   },
   church: {
     name: 'Church',

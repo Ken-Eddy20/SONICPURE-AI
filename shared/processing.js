@@ -4,19 +4,113 @@
  * Keep this file dependency-free so both runtimes can import it.
  */
 
-export const PLAN_IDS = ['free', 'payg', 'pro', 'audio_master', 'church'];
-export const PREMIUM_PLANS = ['pro', 'audio_master', 'church'];
+export const PLAN_IDS = ['free', 'payg', 'pro', 'audio_master', 'podcast', 'church'];
+export const PREMIUM_PLANS = ['pro', 'audio_master', 'podcast', 'church'];
 
 export const PLAN_NAMES = {
   free: 'Free',
   payg: 'Pay As You Go',
   pro: 'Pro',
   audio_master: 'Audio Master',
+  podcast: 'Podcast',
   church: 'Church',
 };
 
-/** Church plan: one shared credit pool for the whole media team. */
-export const CHURCH_MAX_MEMBERS = 5;
+// ─── Shows (podcasts and churches share one engine) ──────────────
+
+/** Plans that belong to a show and bill its shared credit pool. */
+export const SHOW_PLANS = ['podcast', 'church'];
+export const isShowPlan = (plan) => SHOW_PLANS.includes(plan);
+
+/** People who can share a show, by its plan ('none' = not paid yet). */
+export const SHOW_MAX_MEMBERS = { none: 2, podcast: 2, church: 5 };
+export const showMaxMembers = (plan) => SHOW_MAX_MEMBERS[plan] ?? SHOW_MAX_MEMBERS.none;
+
+/**
+ * Wording and defaults per kind of show. Features are identical; only labels,
+ * the default podcast category and suggested plan differ.
+ */
+export const SHOW_TYPES = {
+  church: {
+    label: 'Church or ministry',
+    hint: 'Sermons, teachings and services',
+    item: 'Sermon',
+    items: 'Sermons',
+    speaker: 'Preacher',
+    speakerPlaceholder: 'e.g. Rev. Mensah',
+    guests: '',
+    series: 'Series',
+    reference: 'Scripture',
+    referencePlaceholder: 'e.g. Hebrews 11:1-6',
+    numbered: false,
+    keepMusicLabel: 'Keep worship songs',
+    team: 'Media team',
+    category: 'Religion & Spirituality',
+    subcategory: 'Christianity',
+    plan: 'church',
+  },
+  podcast: {
+    label: 'Podcast show',
+    hint: 'Talk shows, interviews, storytelling',
+    item: 'Episode',
+    items: 'Episodes',
+    speaker: 'Host',
+    speakerPlaceholder: 'e.g. Ama Serwaa',
+    guests: 'Guests',
+    series: '',
+    reference: '',
+    referencePlaceholder: '',
+    numbered: true,
+    keepMusicLabel: 'Keep intro and outro music',
+    team: 'Co-hosts and editors',
+    category: 'Society & Culture',
+    subcategory: '',
+    plan: 'podcast',
+  },
+  organization: {
+    label: 'School or organisation',
+    hint: 'Lectures, trainings, briefings',
+    item: 'Episode',
+    items: 'Episodes',
+    speaker: 'Speaker',
+    speakerPlaceholder: 'e.g. Dr. Owusu',
+    guests: 'Guests',
+    series: 'Series',
+    reference: '',
+    referencePlaceholder: '',
+    numbered: true,
+    keepMusicLabel: 'Keep music',
+    team: 'Team',
+    category: 'Education',
+    subcategory: '',
+    plan: 'podcast',
+  },
+};
+export const SHOW_TYPE_IDS = Object.keys(SHOW_TYPES);
+export const showType = (type) => SHOW_TYPES[type] || SHOW_TYPES.podcast;
+
+/** Apple Podcasts categories (the list Spotify also follows). */
+export const PODCAST_CATEGORIES = {
+  Arts: ['Books', 'Design', 'Fashion & Beauty', 'Food', 'Performing Arts', 'Visual Arts'],
+  Business: ['Careers', 'Entrepreneurship', 'Investing', 'Management', 'Marketing', 'Non-Profit'],
+  Comedy: ['Comedy Interviews', 'Improv', 'Stand-Up'],
+  Education: ['Courses', 'How To', 'Language Learning', 'Self-Improvement'],
+  Fiction: ['Comedy Fiction', 'Drama', 'Science Fiction'],
+  Government: [],
+  History: [],
+  'Health & Fitness': ['Alternative Health', 'Fitness', 'Medicine', 'Mental Health', 'Nutrition', 'Sexuality'],
+  'Kids & Family': ['Education for Kids', 'Parenting', 'Pets & Animals', 'Stories for Kids'],
+  Leisure: ['Animation & Manga', 'Automotive', 'Aviation', 'Crafts', 'Games', 'Hobbies', 'Home & Garden', 'Video Games'],
+  Music: ['Music Commentary', 'Music History', 'Music Interviews'],
+  News: ['Business News', 'Daily News', 'Entertainment News', 'News Commentary', 'Politics', 'Sports News', 'Tech News'],
+  'Religion & Spirituality': ['Buddhism', 'Christianity', 'Hinduism', 'Islam', 'Judaism', 'Religion', 'Spirituality'],
+  Science: ['Astronomy', 'Chemistry', 'Earth Sciences', 'Life Sciences', 'Mathematics', 'Natural Sciences', 'Nature', 'Physics', 'Social Sciences'],
+  'Society & Culture': ['Documentary', 'Personal Journals', 'Philosophy', 'Places & Travel', 'Relationships'],
+  Sports: ['Baseball', 'Basketball', 'Cricket', 'Fantasy Sports', 'Football', 'Golf', 'Hockey', 'Running', 'Soccer', 'Wilderness', 'Wrestling'],
+  Technology: [],
+  'True Crime': [],
+  'TV & Film': ['After Shows', 'Film History', 'Film Interviews', 'Film Reviews', 'TV Reviews'],
+};
 
 /** Pay As You Go pricing: $1 buys 20 credits, minimum 20 credits. */
 export const PAYG_CREDITS_PER_USD = 20;
@@ -24,7 +118,7 @@ export const PAYG_MIN_CREDITS = 20;
 export const PAYG_MAX_CREDITS = 10000;
 
 /** Credits added each time a subscription plan is paid. */
-export const PLAN_CREDITS = { pro: 600, audio_master: 2000, church: 1500 };
+export const PLAN_CREDITS = { pro: 600, audio_master: 2000, podcast: 600, church: 1500 };
 
 // ─── Transcripts, translation and captions (Khaya AI) ────────────
 
@@ -299,9 +393,9 @@ export function buildCleanvoiceConfig(feature, options, plan) {
   return { config, qualityLevel: premium ? 100 : 80 };
 }
 
-/** Settings used for every sermon: podcast loudness, MP3, worship songs protected, notes on. */
-export const SERMON_FEATURE = 'voice_clarity';
-export const SERMON_OPTIONS = {
+/** Settings used for every episode or sermon: podcast loudness, MP3, music protected, notes on. */
+export const EPISODE_FEATURE = 'voice_clarity';
+export const EPISODE_OPTIONS = {
   exportFormat: 'mp3',
   loudness: 'podcast',
   keepMusic: true,
@@ -313,7 +407,7 @@ export const SERMON_OPTIONS = {
 // ─── Meetings ────────────────────────────────────────────────────
 
 /** Longest meeting recording each plan can transcribe, in minutes. */
-export const MEETING_MAX_MINUTES = { free: 60, payg: 180, pro: 240, audio_master: 480, church: 240 };
+export const MEETING_MAX_MINUTES = { free: 60, payg: 180, pro: 240, audio_master: 480, podcast: 240, church: 240 };
 /** Largest meeting file accepted (audio or video). */
 export const MEETING_MAX_BYTES = 3 * 1024 * 1024 * 1024;
 /** Meeting minutes (summary, decisions, action items), per started hour of recording. */

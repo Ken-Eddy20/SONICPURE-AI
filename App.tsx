@@ -10,9 +10,9 @@ import PaymentPage from './components/PaymentPage';
 import { LogoMark } from './components/ui/Logo';
 import type { SubscriptionTier } from './constants/subscriptionPlans';
 import type { Plan } from './services/api';
-import { PLAN_IDS } from './shared/processing.js';
+import { PLAN_IDS, isShowPlan } from './shared/processing.js';
 
-const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master', 'church'];
+const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master', 'podcast', 'church'];
 
 interface Checkout {
   tier: SubscriptionTier;
@@ -32,8 +32,8 @@ function readPaymentReturn(): (Checkout & { reference: string }) | null {
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [account, setAccount] = useState<(Omit<UserSnapshot, 'churchBilling'> & { churchId: string | null }) | null>(null);
-  const [church, setChurch] = useState<{ id: string; plan: string; credits: number; creditsUsedThisMonth: number } | null>(null);
+  const [account, setAccount] = useState<(Omit<UserSnapshot, 'showBilling'> & { showId: string | null }) | null>(null);
+  const [show, setShow] = useState<{ id: string; plan: string; credits: number; creditsUsedThisMonth: number } | null>(null);
 
   const [authMode, setAuthMode] = useState<'signin' | 'signup' | null>(null);
   const [upgradeTier, setUpgradeTier] = useState<SubscriptionTier | null>(null);
@@ -89,38 +89,38 @@ export default function App() {
           creditsUsedThisMonth: d.creditsUsedThisMonth || 0,
           dailyEnhancesUsed: d.dailyEnhancesUsed || 0,
           dailyEnhancesDate: d.dailyEnhancesDate || '',
-          churchId: d.churchId || null,
+          showId: d.showId || null,
         });
       },
       (err) => console.error('Firestore error:', err),
     );
   }, [user]);
 
-  // Church members on an active Church plan use the church's shared credits.
-  const churchId = account?.churchId || null;
+  // Members of a podcast or church team on an active plan use the team's shared credits.
+  const showId = account?.showId || null;
   useEffect(() => {
-    if (!churchId) {
-      setChurch(null);
+    if (!showId) {
+      setShow(null);
       return;
     }
     return onSnapshot(
-      doc(db, 'churches', churchId),
+      doc(db, 'shows', showId),
       (snap) => {
         const d = snap.data();
-        setChurch(d ? { id: snap.id, plan: d.plan, credits: Number(d.credits || 0), creditsUsedThisMonth: Number(d.creditsUsedThisMonth || 0) } : null);
+        setShow(d ? { id: snap.id, plan: d.plan, credits: Number(d.credits || 0), creditsUsedThisMonth: Number(d.creditsUsedThisMonth || 0) } : null);
       },
-      () => setChurch(null),
+      () => setShow(null),
     );
-  }, [churchId]);
+  }, [showId]);
 
   const effective = useMemo<UserSnapshot | null>(() => {
     if (!account) return null;
-    const { churchId: _ignored, ...base } = account;
-    if (church?.plan === 'church') {
-      return { ...base, plan: 'church', credits: church.credits, creditsUsedThisMonth: church.creditsUsedThisMonth, churchBilling: true };
+    const { showId: _ignored, ...base } = account;
+    if (show && isShowPlan(show.plan)) {
+      return { ...base, plan: show.plan as Plan, credits: show.credits, creditsUsedThisMonth: show.creditsUsedThisMonth, showBilling: true };
     }
-    return { ...base, churchBilling: false };
-  }, [account, church]);
+    return { ...base, showBilling: false };
+  }, [account, show]);
 
   // Resume a redirect-based Paystack payment once auth is known.
   useEffect(() => {

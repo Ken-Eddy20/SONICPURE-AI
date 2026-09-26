@@ -1,6 +1,6 @@
 /**
  * SonicPure API: uploads to Cloudinary, cleans audio with Cleanvoice, local-language
- * transcripts and captions with Khaya AI + ffmpeg, church accounts with a podcast
+ * transcripts and captions with Khaya AI + ffmpeg, podcast/church shows with a podcast
  * feed, credits in Firestore and payments through Paystack (in GHS).
  * All secrets stay server-side.
  */
@@ -23,7 +23,7 @@ import { resolveAccount, billedTo, billingRefFor, getAccessibleFile, refundJob }
 import { khayaConfigured } from './lib/khaya.js';
 import transcriptsRouter from './routes/transcripts.js';
 import captionsRouter from './routes/captions.js';
-import churchRouter from './routes/church.js';
+import showsRouter from './routes/shows.js';
 import meetingsRouter from './routes/meetings.js';
 import recordingsRouter from './routes/recordings.js';
 import { minutesConfigured } from './lib/claude.js';
@@ -60,12 +60,14 @@ app.set('trust proxy', 1);
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 
 // Podcast feeds are public and read by Apple/Spotify servers, so they skip CORS.
-const churchRoutes = churchRouter({
+const showRoutes = showsRouter({
   publicBaseUrl: process.env.PUBLIC_API_URL,
   siteUrl: process.env.PUBLIC_SITE_URL,
   serializeFile,
 });
-app.get('/feeds/church/:id', churchRoutes.feed);
+app.get('/feeds/show/:id', showRoutes.feed);
+// Feed links created before podcasts and churches were merged keep working.
+app.get('/feeds/church/:id', showRoutes.feed);
 
 app.use(
   cors({
@@ -102,7 +104,7 @@ app.get('/', (req, res) => {
 
 app.use('/api/transcripts', transcriptsRouter({ limiter: uploadLimiter }));
 app.use('/api/captions', captionsRouter({ limiter: uploadLimiter }));
-app.use('/api/church', churchRoutes.router);
+app.use('/api/shows', showRoutes.router);
 app.use('/api/meetings', meetingsRouter({ limiter: uploadLimiter }));
 app.use('/api/recordings', recordingsRouter({ limiter: uploadLimiter }));
 
@@ -138,7 +140,7 @@ function serializeFile(id, d, full = true) {
     qualityLevel: d.qualityLevel || null,
     statistics: d.statistics || null,
     hasNotes: Boolean(d.transcript || d.summary),
-    churchId: d.churchId || null,
+    showId: d.showId || null,
     error: d.error || null,
     createdAt: iso(d.createdAt),
     expiresAt: iso(d.expiresAt),
@@ -168,7 +170,7 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
       throw new HttpError(400, 'Unsupported file type. Please upload an audio or video file.');
     }
     if (isVideo && !planData.extractAudioFromVideo) {
-      throw new HttpError(403, 'Video uploads are available on Pro, Audio Master and Church.', { upgrade: true });
+      throw new HttpError(403, 'Video uploads are available on Pro, Audio Master, Podcast and Church.', { upgrade: true });
     }
 
     // Fail fast before spending bandwidth on a job that will be rejected.
@@ -207,7 +209,7 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
     const now = new Date();
     const docRef = await adminDb.collection('audioFiles').add({
       userId,
-      churchId: account.kind === 'church' ? account.churchId : null,
+      showId: account.kind === 'show' ? account.showId : null,
       originalFileName: req.file.originalname || 'audio',
       originalFileUrl: secure_url,
       originalPublicId: public_id,
@@ -486,8 +488,8 @@ app.delete('/api/audio/:fileId', async (req, res) => {
     if (data.status === 'processing' || data.status === 'finalizing') {
       throw new HttpError(409, 'Wait for this file to finish processing before deleting it.');
     }
-    const sermonSnap = await adminDb.collection('sermons').where('fileId', '==', ref.id).limit(1).get();
-    if (!sermonSnap.empty) throw new HttpError(409, 'This file is a sermon. Delete the sermon in the Church tab first.');
+    const episodeSnap = await adminDb.collection('episodes').where('fileId', '==', ref.id).limit(1).get();
+    if (!episodeSnap.empty) throw new HttpError(409, 'This file is a podcast episode. Delete it in the Podcast tab first.');
     for (const id of [data.originalPublicId, data.processedPublicId, data.extractedPublicId]) {
       if (id) await deleteAudio(id).catch((e) => diskLog(`[Cloudinary] delete failed ${id}: ${e.message}`));
     }
@@ -529,7 +531,8 @@ app.get('/api/paystack/rate', async (req, res) => {
 // ─── Paystack ────────────────────────────────────────────────────
 
 const PAYSTACK_BASE = 'https://api.paystack.co';
-const PAID_TIERS = ['payg', 'pro', 'audio_master', 'church'];
+const PAID_TIERS = ['payg', 'pro', 'audio_master', 'podcast', 'church'];
+const SHOW_TIERS = ['podcast', 'church'];
 
 function getPaystackSecretKey() {
   const key = process.env.PAYSTACK_SECRET_KEY;
@@ -563,12 +566,12 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
     if (!planSnap.exists) throw new HttpError(400, 'Plan not found');
     const planData = planSnap.data();
 
-    let churchId = null;
-    if (tier === 'church') {
-      if (!userData.churchId) throw new HttpError(400, 'Create your church account in the Church tab first.');
-      const church = (await adminDb.collection('churches').doc(userData.churchId).get()).data();
-      if (church?.ownerId !== userId) throw new HttpError(403, 'Only the church account owner can pay for the Church plan.');
-      churchId = userData.churchId;
+    let showId = null;
+    if (SHOW_TIERS.includes(tier)) {
+      if (!userData.showId) throw new HttpError(400, 'Create your podcast or church account in the Podcast tab first.');
+      const show = (await adminDb.collection('shows').doc(userData.showId).get()).data();
+      if (show?.ownerId !== userId) throw new HttpError(403, 'Only the account owner can pay for this plan.');
+      showId = userData.showId;
     }
 
     let usdAmount;
@@ -599,7 +602,7 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
       metadata: {
         userId,
         tier,
-        churchId,
+        showId,
         creditsToAdd,
         usdAmount,
         custom_fields: [
@@ -676,27 +679,27 @@ async function applyPaymentOnce(userId, tier, txData) {
 
   const txRef = adminDb.collection('transactions').doc(String(txData.reference));
   const userRef = adminDb.collection('users').doc(userId);
-  const churchRef = tier === 'church' && meta.churchId ? adminDb.collection('churches').doc(meta.churchId) : null;
+  const showRef = SHOW_TIERS.includes(tier) && meta.showId ? adminDb.collection('shows').doc(meta.showId) : null;
 
   await adminDb.runTransaction(async (tx) => {
     const reads = [tx.get(txRef), tx.get(userRef)];
-    if (churchRef) reads.push(tx.get(churchRef));
-    const [existing, userSnap, churchSnap] = await Promise.all(reads);
+    if (showRef) reads.push(tx.get(showRef));
+    const [existing, userSnap, showSnap] = await Promise.all(reads);
     if (existing.exists) return;
 
     const now = new Date();
     const renewDate = new Date(now);
     renewDate.setMonth(renewDate.getMonth() + 1);
 
-    if (churchRef) {
-      const church = churchSnap?.exists ? churchSnap.data() : null;
-      if (!church) throw new Error(`Church ${meta.churchId} not found for payment ${txData.reference}`);
-      tx.update(churchRef, {
-        plan: 'church',
-        credits: Math.max(0, Number(church.credits || 0)) + creditsAdded,
+    if (showRef) {
+      const show = showSnap?.exists ? showSnap.data() : null;
+      if (!show) throw new Error(`Show ${meta.showId} not found for payment ${txData.reference}`);
+      tx.update(showRef, {
+        plan: tier,
+        credits: Math.max(0, Number(show.credits || 0)) + creditsAdded,
         creditsUsedThisMonth: 0,
         billingRenewDate: renewDate,
-        paystackCustomerId: txData.customer?.customer_code || church.paystackCustomerId || null,
+        paystackCustomerId: txData.customer?.customer_code || show.paystackCustomerId || null,
       });
     } else {
       const user = userSnap.exists ? userSnap.data() : {};
@@ -717,7 +720,7 @@ async function applyPaymentOnce(userId, tier, txData) {
 
     tx.set(txRef, {
       userId,
-      churchId: churchRef ? churchRef.id : null,
+      showId: showRef ? showRef.id : null,
       paystackReference: txData.reference,
       amountPaid: txData.amount / 100,
       currency: txData.currency || 'GHS',
@@ -730,7 +733,7 @@ async function applyPaymentOnce(userId, tier, txData) {
       createdAt: now,
     });
   });
-  diskLog(`[Paystack] applied ${tier} (+${creditsAdded} credits) for ${churchRef ? `church ${churchRef.id}` : userId}, ref ${txData.reference}`);
+  diskLog(`[Paystack] applied ${tier} (+${creditsAdded} credits) for ${showRef ? `show ${showRef.id}` : userId}, ref ${txData.reference}`);
   return { creditsAdded };
 }
 

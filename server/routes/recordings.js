@@ -46,7 +46,7 @@ function serialize(id, r) {
   };
 }
 
-/** Free users (no paid plan, no active church) keep a limited library. */
+/** Free users (no paid plan, no active podcast or church plan) keep a limited library. */
 const isFreeTier = (account) => account.plan === 'free';
 
 export default function recordingsRouter({ limiter }) {
@@ -102,7 +102,7 @@ export default function recordingsRouter({ limiter }) {
       const ref = recordings().doc();
       await ref.set({
         userId: uid,
-        churchId: account.churchId || null,
+        showId: account.showId || null,
         meta,
         audioUrl: saved.secure_url,
         publicId: saved.public_id,
@@ -154,7 +154,7 @@ export default function recordingsRouter({ limiter }) {
     const now = new Date();
     const fileRef = await adminDb.collection('audioFiles').add({
       userId: uid,
-      churchId: account.kind === 'church' ? account.churchId : null,
+      showId: account.kind === 'show' ? account.showId : null,
       originalFileName: `${r.meta?.title || 'Recording'}.mp3`,
       originalFileUrl: r.audioUrl,
       // Owned by the recording; deleting the studio copy must not delete the library file.

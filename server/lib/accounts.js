@@ -1,11 +1,12 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '../../lib/firebaseAdmin.js';
 import { HttpError } from './http.js';
+import { isShowPlan } from '../../shared/processing.js';
 
 /**
- * Who pays for a job. A member of a church with an active Church plan bills the
- * church's shared credit pool and gets Church plan features; everyone else bills
- * their own user doc on their own plan.
+ * Who pays for a job. A member of a show (podcast or church) with an active Podcast or
+ * Church plan bills the show's shared credit pool and gets that plan's features;
+ * everyone else bills their own user doc on their own plan.
  *
  * Pass `tx` to read inside a Firestore transaction (reads must come before writes).
  */
@@ -16,19 +17,19 @@ export async function resolveAccount(userId, tx = null) {
   if (!userSnap.exists) throw new HttpError(404, 'User not found');
   const user = userSnap.data();
 
-  if (user.churchId) {
-    const churchRef = adminDb.collection('churches').doc(user.churchId);
-    const churchSnap = await get(churchRef);
-    const church = churchSnap.exists ? churchSnap.data() : null;
-    if (church && church.plan === 'church') {
+  if (user.showId) {
+    const showRef = adminDb.collection('shows').doc(user.showId);
+    const showSnap = await get(showRef);
+    const show = showSnap.exists ? showSnap.data() : null;
+    if (show && isShowPlan(show.plan)) {
       return {
         userRef,
         user,
-        kind: 'church',
-        plan: 'church',
-        churchId: user.churchId,
-        billingRef: churchRef,
-        credits: Number(church.credits || 0),
+        kind: 'show',
+        plan: show.plan,
+        showId: user.showId,
+        billingRef: showRef,
+        credits: Number(show.credits || 0),
       };
     }
   }
@@ -38,7 +39,7 @@ export async function resolveAccount(userId, tx = null) {
     user,
     kind: 'user',
     plan: (user.plan || 'free').toLowerCase(),
-    churchId: user.churchId || null,
+    showId: user.showId || null,
     billingRef: userRef,
     credits: Number(user.credits || 0),
   };
@@ -47,7 +48,9 @@ export async function resolveAccount(userId, tx = null) {
 export const billedTo = (account) => ({ kind: account.kind, id: account.billingRef.id });
 
 export function billingRefFor(billed) {
-  return adminDb.collection(billed?.kind === 'church' ? 'churches' : 'users').doc(billed.id);
+  // 'church' is the pre-rename name of a show pool; kept so old jobs still refund correctly.
+  const shared = billed?.kind === 'show' || billed?.kind === 'church';
+  return adminDb.collection(shared ? 'shows' : 'users').doc(billed.id);
 }
 
 /**
@@ -69,7 +72,7 @@ export async function chargeAndCreate(userId, cost, jobRef, jobData, check) {
       credits: account.credits - cost,
       creditsUsedThisMonth: FieldValue.increment(cost),
     });
-    tx.set(jobRef, { ...jobData, creditsUsed: cost, billedTo: billedTo(account), churchId: account.churchId || null });
+    tx.set(jobRef, { ...jobData, creditsUsed: cost, billedTo: billedTo(account), showId: account.showId || null });
     return account;
   });
 }
@@ -92,16 +95,16 @@ export async function refundJob(jobRef, reason) {
   });
 }
 
-/** A file is visible to its uploader and to members of the church it was uploaded under. */
+/** A file is visible to its uploader and to members of the show it was uploaded under. */
 export async function getAccessibleFile(fileId, userId) {
   const ref = adminDb.collection('audioFiles').doc(fileId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpError(404, 'File not found');
   const data = snap.data();
   if (data.userId === userId) return { ref, data };
-  if (data.churchId) {
+  if (data.showId) {
     const user = (await adminDb.collection('users').doc(userId).get()).data();
-    if (user?.churchId === data.churchId) return { ref, data };
+    if (user?.showId === data.showId) return { ref, data };
   }
   throw new HttpError(403, 'Not authorized');
 }

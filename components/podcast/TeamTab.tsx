@@ -1,21 +1,23 @@
 import { useState } from 'react';
 import { Check, Copy, Loader2, MessageCircle, RefreshCw, UserMinus } from 'lucide-react';
-import { ApiError, leaveChurch, regenerateInvite, removeChurchMember, type Church, type ChurchMember } from '../../services/api';
+import { ApiError, leaveShow, regenerateInvite, removeShowMember, type Show, type ShowMember } from '../../services/api';
+import { showType } from '../../shared/processing.js';
 
 interface Props {
-  church: Church;
-  members: ChurchMember[];
+  show: Show;
+  members: ShowMember[];
   onChanged: () => void;
 }
 
-export default function TeamTab({ church, members, onChanged }: Props) {
+export default function TeamTab({ show, members, onChanged }: Props) {
+  const t = showType(show.type);
   const [busy, setBusy] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const owner = church.role === 'owner';
-  const full = church.memberCount >= church.maxMembers;
+  const owner = show.role === 'owner';
+  const full = show.memberCount >= show.maxMembers;
 
-  const inviteText = `Join ${church.name} on SonicPure AI to help with our sermon recordings. Sign up at ${window.location.origin}, open the Church tab and enter this code: ${church.inviteCode}`;
+  const inviteText = `Join ${show.name} on SonicPure AI to help with our ${t.items.toLowerCase()}. Sign up at ${window.location.origin}, open the Podcast tab and enter this code: ${show.inviteCode}`;
 
   const act = async (key: string, fn: () => Promise<unknown>) => {
     setBusy(key);
@@ -33,13 +35,13 @@ export default function TeamTab({ church, members, onChanged }: Props) {
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_1.2fr]">
       <div className="card p-6">
-        <h2 className="text-lg font-bold">Invite your media team</h2>
+        <h2 className="text-lg font-bold">Invite your {t.team.toLowerCase()}</h2>
         <p className="mt-1 text-sm text-muted">
-          Up to {church.maxMembers} people share the church credits. Everyone can upload and publish sermons.
+          Up to {show.maxMembers} people share the credits. Everyone can upload and publish {t.items.toLowerCase()}.
         </p>
         <div className="mt-5 rounded-2xl bg-sunken p-5 text-center">
           <p className="eyebrow">Invite code</p>
-          <p className="mt-2 font-mono text-3xl font-extrabold tracking-[0.25em]">{church.inviteCode}</p>
+          <p className="mt-2 font-mono text-3xl font-extrabold tracking-[0.25em]">{show.inviteCode}</p>
         </div>
         {full ? (
           <p className="mt-4 rounded-2xl bg-warn-soft px-4 py-3 text-sm text-warn">The team is full. Remove someone to invite a new member.</p>
@@ -87,13 +89,13 @@ export default function TeamTab({ church, members, onChanged }: Props) {
                 <p className="truncate text-sm font-semibold">{m.displayName || m.email}</p>
                 <p className="truncate text-xs text-muted">{m.email}</p>
               </div>
-              <span className="chip py-0.5 text-[11px]">{m.role === 'owner' ? 'Admin' : 'Media team'}</span>
+              <span className="chip py-0.5 text-[11px]">{m.role === 'owner' ? 'Admin' : 'Team member'}</span>
               {owner && m.role !== 'owner' && (
                 <button
                   type="button"
                   aria-label={`Remove ${m.email}`}
                   disabled={busy !== null}
-                  onClick={() => window.confirm(`Remove ${m.displayName || m.email} from the team?`) && act(m.uid, () => removeChurchMember(m.uid))}
+                  onClick={() => window.confirm(`Remove ${m.displayName || m.email} from the team?`) && act(m.uid, () => removeShowMember(m.uid))}
                   className="grid h-8 w-8 place-items-center rounded-full text-faint hover:bg-danger-soft hover:text-danger"
                 >
                   {busy === m.uid ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserMinus className="h-4 w-4" />}
@@ -106,10 +108,10 @@ export default function TeamTab({ church, members, onChanged }: Props) {
           <button
             type="button"
             disabled={busy !== null}
-            onClick={() => window.confirm(`Leave ${church.name}? You will go back to your own plan and credits.`) && act('leave', leaveChurch)}
+            onClick={() => window.confirm(`Leave ${show.name}? You will go back to your own plan and credits.`) && act('leave', leaveShow)}
             className="btn-ghost mt-4 py-2 text-danger"
           >
-            Leave this church team
+            Leave this team
           </button>
         )}
         {error && <p className="mt-4 rounded-2xl bg-danger-soft px-4 py-3 text-sm text-danger">{error}</p>}

@@ -1,4 +1,4 @@
-import { Check, Church } from 'lucide-react';
+import { Check, Church, Radio } from 'lucide-react';
 import { FREE_PLAN, TIER_DETAILS, type SubscriptionTier } from '../constants/subscriptionPlans';
 import type { Plan } from '../services/api';
 
@@ -42,40 +42,54 @@ export default function Pricing({ currentPlan, onChoose, onStartFree }: PricingP
           />
         );
       })}
-      <ChurchBand current={currentPlan === 'church'} onChoose={() => onChoose('church')} />
+      <TeamPlans currentPlan={currentPlan} onChoose={onChoose} />
     </div>
   );
 }
 
-function ChurchBand({ current, onChoose }: { current: boolean; onChoose: () => void }) {
-  const t = TIER_DETAILS.church;
+const TEAM_PLANS: { tier: 'podcast' | 'church'; icon: typeof Radio; topUp: string }[] = [
+  { tier: 'podcast', icon: Radio, topUp: 'Add 600 credits' },
+  { tier: 'church', icon: Church, topUp: 'Add 1,500 credits' },
+];
+
+/** Podcast and Church plans: shared credits for a team plus a podcast feed. */
+function TeamPlans({ currentPlan, onChoose }: { currentPlan?: Plan | null; onChoose: (tier: SubscriptionTier) => void }) {
   return (
-    <div className="flex flex-col gap-6 rounded-3xl border border-line bg-ink p-7 text-bg md:col-span-2 lg:flex-row lg:items-center xl:col-span-4">
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
-          <Church className="h-5 w-5 text-accent" />
-          <h3 className="text-xl font-bold">{t.name} plan</h3>
-          {current && <span className="rounded-full bg-accent px-2.5 py-0.5 text-[11px] font-bold text-accent-ink">Current</span>}
-        </div>
-        <p className="mt-1 opacity-70">{t.description}</p>
-        <ul className="mt-4 grid gap-2 sm:grid-cols-2">
-          {t.features.map((f) => (
-            <li key={f} className="flex gap-2.5 text-sm">
-              <Check className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
-              <span className="opacity-90">{f}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <div className="shrink-0 lg:w-56 lg:text-right">
-        <p>
-          <span className="text-4xl font-extrabold tracking-tight">{t.price}</span>
-          <span className="opacity-60">{t.period}</span>
-        </p>
-        <p className="mt-1 text-sm font-semibold text-accent">{t.credits}</p>
-        <button type="button" onClick={onChoose} className="btn-primary mt-4 w-full py-3">
-          {current ? 'Add 1,500 credits' : t.cta}
-        </button>
+    <div className="rounded-3xl border border-line bg-ink p-5 text-bg sm:p-7 md:col-span-2 xl:col-span-4">
+      <p className="eyebrow text-accent">For podcasters and churches</p>
+      <h3 className="mt-1 text-2xl font-extrabold tracking-tight">Record, clean and publish to Spotify and Apple Podcasts</h3>
+      <p className="mt-1 text-sm opacity-70">Recording and editing in the Podcast tab are free on every plan. These plans add AI cleaning, shared team credits and your own podcast feed.</p>
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        {TEAM_PLANS.map(({ tier, icon: Icon, topUp }) => {
+          const t = TIER_DETAILS[tier];
+          const current = currentPlan === tier;
+          return (
+            <div key={tier} className="flex flex-col rounded-2xl border border-bg/15 p-5 sm:p-6">
+              <div className="flex items-center gap-2">
+                <Icon className="h-5 w-5 text-accent" />
+                <h4 className="text-lg font-bold">{t.name} plan</h4>
+                {current && <span className="rounded-full bg-accent px-2.5 py-0.5 text-[11px] font-bold text-accent-ink">Current</span>}
+              </div>
+              <p className="mt-1 text-sm opacity-70">{t.description}</p>
+              <p className="mt-4">
+                <span className="text-4xl font-extrabold tracking-tight">{t.price}</span>
+                <span className="opacity-60">{t.period}</span>
+              </p>
+              <p className="mt-1 text-sm font-semibold text-accent">{t.credits}</p>
+              <ul className="mt-4 flex-1 space-y-2">
+                {t.features.map((f) => (
+                  <li key={f} className="flex gap-2.5 text-sm">
+                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                    <span className="opacity-90">{f}</span>
+                  </li>
+                ))}
+              </ul>
+              <button type="button" onClick={() => onChoose(tier)} className={`${tier === 'church' ? 'btn-primary' : 'btn-ghost border-bg/25 text-bg hover:bg-bg/10'} mt-6 w-full py-3`}>
+                {current ? topUp : t.cta}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
