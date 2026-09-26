@@ -131,7 +131,6 @@ The API server also serves the built website from `dist/`, so one Render service
 - **Instance:** Starter or higher (always on). Free instances sleep, so podcast apps fetching feeds would time out and the deletion sweeper would pause.
 - **Environment:**
   - Website build: `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID` (the values in `firebase-applet-config.json`, which is not in Git) and `VITE_PAYSTACK_PUBLIC_KEY`.
-  - Server: everything in `.env`: `FIREBASE_*`, `CLEANVOICE_API_KEY`, `CLOUDINARY_*`, `PAYSTACK_SECRET_KEY`, `PAYSTACK_CURRENCY`, `R2_*`, plus optional `KHAYA_API_KEY` and `ANTHROPIC_API_KEY`. Paste `FIREBASE_PRIVATE_KEY` with its `
-` sequences as they are.
+  - Server: everything in `.env`: `FIREBASE_*`, `CLEANVOICE_API_KEY`, `CLOUDINARY_*`, `PAYSTACK_SECRET_KEY`, `PAYSTACK_CURRENCY`, `R2_*`, plus optional `KHAYA_API_KEY` and `ANTHROPIC_API_KEY`. Paste `FIREBASE_PRIVATE_KEY` exactly as it is in `.env` (with its backslash-n sequences).
 - **After the first deploy:** add the Render domain (and any custom domain) to Firebase → Authentication → Settings → Authorized domains, and set the Paystack webhook to `https://<your-domain>/api/paystack/webhook`.
 - Serving the site elsewhere is still possible: set `VITE_API_URL` to the API address at build time and `ALLOWED_ORIGINS` on the server.
