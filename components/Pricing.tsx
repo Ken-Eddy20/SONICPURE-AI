@@ -84,7 +84,7 @@ function TeamPlans({ currentPlan, onChoose }: { currentPlan?: Plan | null; onCho
                   </li>
                 ))}
               </ul>
-              <button type="button" onClick={() => onChoose(tier)} className={`${tier === 'church' ? 'btn-primary' : 'btn-ghost border-bg/25 text-bg hover:bg-bg/10'} mt-6 w-full py-3`}>
+              <button type="button" onClick={() => onChoose(tier)} className="btn-primary mt-6 w-full py-3">
                 {current ? topUp : t.cta}
               </button>
             </div>

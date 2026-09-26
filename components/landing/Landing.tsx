@@ -335,7 +335,7 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
                   </p>
                 </div>
               </div>
-              <button type="button" onClick={() => onChoosePlan('podcast')} className="btn-ghost shrink-0 border-white/25 px-6 py-3 text-bg hover:bg-white/10">
+              <button type="button" onClick={() => onChoosePlan('podcast')} className="btn-primary shrink-0 px-6 py-3">
                 Podcast plan, $35/month <ArrowRight className="h-4 w-4" />
               </button>
             </div>
