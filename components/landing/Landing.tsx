@@ -331,12 +331,12 @@ export default function Landing({ onSignIn, onSignUp, onChoosePlan }: LandingPro
                   <p className="font-bold">Not a church? Run a podcast.</p>
                   <p className="mt-1 max-w-xl text-sm opacity-70">
                     Same studio for talk shows, interviews and school lectures: seasons and episode numbers, guests, any Apple
-                    category, and a co-host on one shared credit pool.
+                    category, and up to 5 people on one shared credit pool. Shorter episodes make the credits go further.
                   </p>
                 </div>
               </div>
               <button type="button" onClick={() => onChoosePlan('podcast')} className="btn-ghost shrink-0 border-white/25 px-6 py-3 text-bg hover:bg-white/10">
-                Podcast plan, $15/month <ArrowRight className="h-4 w-4" />
+                Podcast plan, $35/month <ArrowRight className="h-4 w-4" />
               </button>
             </div>
           </div>

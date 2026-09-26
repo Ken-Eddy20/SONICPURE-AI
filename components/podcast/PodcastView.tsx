@@ -115,7 +115,7 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
       {show && (
         <AccountBar accounts={accounts} currentId={show.id} switching={switching} onOpen={openAccount} onAdd={() => setHub(true)} />
       )}
-      {show && <ShowHeader show={show} onActivate={() => onChoosePlan(planFor(show))} onChangePlan={onChoosePlan} />}
+      {show && <ShowHeader show={show} onActivate={() => onChoosePlan(planFor(show))} />}
 
       <div className="flex gap-1 overflow-x-auto rounded-full border border-line bg-surface p-1 scrollbar-thin sm:w-fit" role="tablist">
         {tabs.map(([id, label, Icon]) => (
@@ -186,7 +186,7 @@ function AccountBar({ accounts, currentId, switching, onOpen, onAdd }: {
   );
 }
 
-function ShowHeader({ show, onActivate, onChangePlan }: { show: Show; onActivate: () => void; onChangePlan: (tier: SubscriptionTier) => void }) {
+function ShowHeader({ show, onActivate }: { show: Show; onActivate: () => void }) {
   const Icon = TYPE_ICONS[show.type] || Radio;
   const t = showType(show.type);
   const planName = show.plan === 'church' ? 'Church plan' : show.plan === 'podcast' ? 'Podcast plan' : null;
@@ -218,7 +218,6 @@ function ShowHeader({ show, onActivate, onChangePlan }: { show: Show; onActivate
             {show.role === 'owner' && (
               <div className="mt-1 flex flex-col gap-0.5 text-xs font-bold text-accent sm:items-end">
                 <button type="button" onClick={onActivate}>Renew / add credits</button>
-                {show.plan === 'podcast' && <button type="button" onClick={() => onChangePlan('church')}>Upgrade to Church plan</button>}
               </div>
             )}
           </div>
@@ -236,9 +235,7 @@ function ShowHeader({ show, onActivate, onChangePlan }: { show: Show; onActivate
               <button type="button" onClick={onActivate} className="btn-primary w-full py-2.5">
                 Activate {SHOW_TYPES[show.type]?.plan === 'church' ? 'Church' : 'Podcast'} plan
               </button>
-              <button type="button" onClick={() => onChangePlan(SHOW_TYPES[show.type]?.plan === 'church' ? 'podcast' : 'church')} className="text-xs font-semibold text-muted hover:text-ink">
-                or choose the {SHOW_TYPES[show.type]?.plan === 'church' ? 'Podcast' : 'Church'} plan instead
-              </button>
+              <p className="text-center text-xs text-muted">$35/month · 1,500 shared credits · up to 5 people</p>
             </div>
           )}
         </div>
@@ -333,7 +330,7 @@ function ShowSetup({ accounts, currentId, switching, onOpen, onBack, backLabel, 
           <ol className="mt-6 space-y-3 text-sm">
             {[
               'Create your account (free).',
-              'Activate a plan: Podcast ($15, 2 people) or Church ($35, 5 people).',
+              'Activate the plan: $35/month, 1,500 shared credits, up to 5 people.',
               'Invite your team with a code.',
               'Upload or record, then publish with one click.',
             ].map((step, i) => (

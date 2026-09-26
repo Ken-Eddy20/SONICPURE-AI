@@ -23,7 +23,7 @@ export const SHOW_PLANS = ['podcast', 'church'];
 export const isShowPlan = (plan) => SHOW_PLANS.includes(plan);
 
 /** People who can share a show, by its plan ('none' = not paid yet). */
-export const SHOW_MAX_MEMBERS = { none: 2, podcast: 2, church: 5 };
+export const SHOW_MAX_MEMBERS = { none: 2, podcast: 5, church: 5 };
 export const showMaxMembers = (plan) => SHOW_MAX_MEMBERS[plan] ?? SHOW_MAX_MEMBERS.none;
 
 /**
@@ -118,7 +118,7 @@ export const PAYG_MIN_CREDITS = 20;
 export const PAYG_MAX_CREDITS = 10000;
 
 /** Credits added each time a subscription plan is paid. */
-export const PLAN_CREDITS = { pro: 600, audio_master: 2000, podcast: 600, church: 1500 };
+export const PLAN_CREDITS = { pro: 600, audio_master: 2000, podcast: 1500, church: 1500 };
 
 // ─── Transcripts, translation and captions (Khaya AI) ────────────
 

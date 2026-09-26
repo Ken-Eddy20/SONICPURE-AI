@@ -48,7 +48,7 @@ export default function Pricing({ currentPlan, onChoose, onStartFree }: PricingP
 }
 
 const TEAM_PLANS: { tier: 'podcast' | 'church'; icon: typeof Radio; topUp: string }[] = [
-  { tier: 'podcast', icon: Radio, topUp: 'Add 600 credits' },
+  { tier: 'podcast', icon: Radio, topUp: 'Add 1,500 credits' },
   { tier: 'church', icon: Church, topUp: 'Add 1,500 credits' },
 ];
 
@@ -58,7 +58,7 @@ function TeamPlans({ currentPlan, onChoose }: { currentPlan?: Plan | null; onCho
     <div className="rounded-3xl border border-line bg-ink p-5 text-bg sm:p-7 md:col-span-2 xl:col-span-4">
       <p className="eyebrow text-accent">For podcasters and churches</p>
       <h3 className="mt-1 text-2xl font-extrabold tracking-tight">Record, clean and publish to Spotify and Apple Podcasts</h3>
-      <p className="mt-1 text-sm opacity-70">Recording and editing in the Podcast tab are free on every plan. These plans add AI cleaning, shared team credits and your own podcast feed.</p>
+      <p className="mt-1 text-sm opacity-70">Same package, same price. Recording and editing in the Podcast tab are free on every plan; these add AI cleaning, 1,500 shared credits for up to 5 people and your own podcast feed. Shorter episodes mean your credits go further.</p>
       <div className="mt-6 grid gap-4 lg:grid-cols-2">
         {TEAM_PLANS.map(({ tier, icon: Icon, topUp }) => {
           const t = TIER_DETAILS[tier];
