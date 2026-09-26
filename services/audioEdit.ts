@@ -221,6 +221,8 @@ export function schedule(
   from: number,
   to: number,
   when = 0,
+  /** Where the audio goes: the speakers by default, or e.g. a level meter chain. */
+  destination: AudioNode = ctx.destination,
 ): AudioScheduledSourceNode[] {
   const nodes: AudioScheduledSourceNode[] = [];
   let pos = 0;
@@ -241,7 +243,7 @@ export function schedule(
     const t1 = when + (segEnd - from);
     gain.gain.setValueAtTime(gainAt(segStart), t0);
     gain.gain.linearRampToValueAtTime(gainAt(segEnd), t1);
-    node.connect(gain).connect(ctx.destination);
+    node.connect(gain).connect(destination);
     node.start(t0, c.srcStart + (segStart - cStart), segEnd - segStart);
     nodes.push(node);
   }
