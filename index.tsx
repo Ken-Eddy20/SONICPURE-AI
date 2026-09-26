@@ -11,10 +11,10 @@ function SetupNotice() {
         <p className="eyebrow text-accent">Setup needed</p>
         <h1 className="mt-2 text-2xl font-extrabold tracking-tight">Firebase config is missing</h1>
         <p className="mt-3 text-sm leading-relaxed text-muted">
-          Add your Firebase web app config as <code className="font-mono text-ink">VITE_FIREBASE_*</code> variables in{' '}
-          <code className="font-mono text-ink">.env.local</code> (see <code className="font-mono text-ink">.env.example</code>), or
-          place <code className="font-mono text-ink">firebase-applet-config.json</code> in the project root. Then restart the dev
-          server.
+          Add your Firebase web app config as <code className="font-mono text-ink">VITE_FIREBASE_*</code> variables: on Render in
+          the service's Environment settings (then restart the service), or locally in <code className="font-mono text-ink">.env.local</code>{' '}
+          (see <code className="font-mono text-ink">.env.example</code>) or as <code className="font-mono text-ink">firebase-applet-config.json</code> in
+          the project root.
         </p>
       </div>
     </div>

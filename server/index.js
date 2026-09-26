@@ -83,6 +83,34 @@ app.use(
 const DIST_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const SERVE_SITE = fs.existsSync(path.join(DIST_DIR, 'index.html'));
 
+/**
+ * Firebase web config (public by design) from the environment, handed to the page at request time.
+ * Accepts the VITE_FIREBASE_* names used for the build, or FIREBASE_WEB_* on the server.
+ */
+function firebaseWebConfig() {
+  const pick = (name) => (process.env[`VITE_FIREBASE_${name}`] || process.env[`FIREBASE_WEB_${name}`] || '').trim();
+  const config = {
+    apiKey: pick('API_KEY'),
+    authDomain: pick('AUTH_DOMAIN'),
+    projectId: pick('PROJECT_ID') || (process.env.FIREBASE_PROJECT_ID || '').trim(),
+    storageBucket: pick('STORAGE_BUCKET'),
+    messagingSenderId: pick('MESSAGING_SENDER_ID'),
+    appId: pick('APP_ID'),
+  };
+  return config.apiKey && config.projectId ? config : null;
+}
+
+/** index.html with the Firebase config script added, built once at startup. */
+const SITE_HTML = (() => {
+  if (!SERVE_SITE) return null;
+  const html = fs.readFileSync(path.join(DIST_DIR, 'index.html'), 'utf8');
+  const config = firebaseWebConfig();
+  if (!config) return html;
+  // Escape "<" so the JSON can never close the script tag early.
+  const script = `<script>window.__FIREBASE_CONFIG__=${JSON.stringify(config).replace(/</g, '\\u003c')};</script>`;
+  return html.replace('</head>', `${script}\n</head>`);
+})();
+
 // Podcast feeds are public and read by Apple/Spotify servers, so they skip CORS.
 const showRoutes = showsRouter({
   publicBaseUrl: process.env.PUBLIC_API_URL,
@@ -837,7 +865,7 @@ if (SERVE_SITE) {
   app.use((req, res, next) => {
     if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/feeds/')) return next();
     res.setHeader('Cache-Control', 'no-cache');
-    res.sendFile(path.join(DIST_DIR, 'index.html'));
+    res.type('html').send(SITE_HTML);
   });
 }
 
@@ -859,6 +887,7 @@ async function recoverInterruptedJobs() {
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
   diskLog(`SonicPure API server on http://localhost:${PORT}${SERVE_SITE ? ' (also serving the website from dist/)' : ''}`);
+  if (SERVE_SITE && !firebaseWebConfig()) diskLog('WARNING: VITE_FIREBASE_API_KEY / VITE_FIREBASE_PROJECT_ID not set - the website will show "Firebase config is missing"');
   if (!process.env.CLEANVOICE_API_KEY) diskLog('WARNING: CLEANVOICE_API_KEY not set - audio processing will fail');
   if (!khayaConfigured()) diskLog('WARNING: KHAYA_API_KEY not set - local-language transcripts and captions are disabled');
   if (!minutesConfigured()) diskLog('WARNING: ANTHROPIC_API_KEY not set - meeting minutes are disabled');

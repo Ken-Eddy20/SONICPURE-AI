@@ -17,7 +17,15 @@ const envConfig: FirebaseOptions = {
   appId: env.VITE_FIREBASE_APP_ID,
 };
 
-const config: FirebaseOptions | undefined = envConfig.apiKey ? envConfig : fileConfig;
+declare global {
+  interface Window {
+    /** Injected into index.html by the server at request time (see server/index.js), so a deploy works even if the build had no VITE_FIREBASE_* values. */
+    __FIREBASE_CONFIG__?: FirebaseOptions;
+  }
+}
+const runtimeConfig = typeof window !== 'undefined' ? window.__FIREBASE_CONFIG__ : undefined;
+
+const config: FirebaseOptions | undefined = envConfig.apiKey ? envConfig : runtimeConfig?.apiKey ? runtimeConfig : fileConfig;
 
 /** False when no Firebase web config was provided; index.tsx shows setup instructions instead of the app. */
 export const firebaseConfigured = Boolean(config?.apiKey && config?.projectId);
