@@ -37,10 +37,12 @@ type Labels = ReturnType<typeof showType>;
 interface Props {
   show: Show;
   onActivate: () => void;
+  /** Buy extra podcast hours. */
+  onAddSpace: () => void;
   onChanged: () => void;
 }
 
-export default function EpisodesTab({ show, onActivate, onChanged }: Props) {
+export default function EpisodesTab({ show, onActivate, onAddSpace, onChanged }: Props) {
   const t = showType(show.type);
   const [episodes, setEpisodes] = useState<Episode[] | null>(null);
   const [mode, setMode] = useState<{ kind: 'list' } | { kind: 'new' } | { kind: 'detail'; id: string }>({ kind: 'list' });
@@ -100,7 +102,7 @@ export default function EpisodesTab({ show, onActivate, onChanged }: Props) {
           <h2 className="text-xl font-extrabold tracking-tight">{t.items}</h2>
           <p className="text-sm text-muted">Everything your team uploads, newest first.</p>
         </div>
-        {show.hostingLimitHours > 0 && <HostingMeter show={show} />}
+        {show.hostingLimitHours > 0 && <HostingMeter show={show} onAddSpace={onAddSpace} />}
         {show.active ? (
           <button type="button" onClick={() => setMode({ kind: 'new' })} className="btn-primary px-5 py-2.5">
             <Plus className="h-4 w-4" /> New {t.item.toLowerCase()}
@@ -167,7 +169,7 @@ export default function EpisodesTab({ show, onActivate, onChanged }: Props) {
 }
 
 /** Hours of published audio online, against the plan's limit. */
-function HostingMeter({ show }: { show: Show }) {
+function HostingMeter({ show, onAddSpace }: { show: Show; onAddSpace: () => void }) {
   const used = show.hostingUsedSeconds / 3600;
   const pct = Math.min(100, (used / show.hostingLimitHours) * 100);
   return (
@@ -178,6 +180,16 @@ function HostingMeter({ show }: { show: Show }) {
       </div>
       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line">
         <div className={`h-full rounded-full ${pct >= 90 ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${Math.max(1, pct)}%` }} />
+      </div>
+      <div className="mt-1 flex justify-between gap-2 text-[11px] text-muted">
+        <span>
+          {show.hostingAddon
+            ? `Includes +${show.hostingAddon.hours} extra hours until ${show.hostingAddon.until ? new Date(show.hostingAddon.until).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : ''}`
+            : 'Only published episodes are kept'}
+        </span>
+        <button type="button" onClick={onAddSpace} className="font-bold text-accent hover:underline">
+          {show.hostingAddon ? 'Renew extra space' : 'Add 250 hours · $3/month'}
+        </button>
       </div>
     </div>
   );

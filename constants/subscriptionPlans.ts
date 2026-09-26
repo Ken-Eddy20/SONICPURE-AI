@@ -1,4 +1,4 @@
-export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church' | 'team_topup';
+export type SubscriptionTier = 'payg' | 'pro' | 'audio_master' | 'podcast' | 'church' | 'team_topup' | 'hosting_addon';
 
 export interface TierDetails {
   name: string;
@@ -115,6 +115,23 @@ const TEAM_TOPUP_DETAILS: TierDetails = {
   cta: 'Top up team credits',
 };
 TIER_DETAILS.team_topup = TEAM_TOPUP_DETAILS;
+
+/** Not a plan: more podcast hours online (see HOSTING_ADDON_* in shared/processing.js). */
+TIER_DETAILS.hosting_addon = {
+  name: 'Extra podcast space',
+  price: '$3',
+  priceAmount: 3,
+  period: 'per 250 hours, 30 days',
+  credits: '+250 hours online',
+  description: 'Keep more episodes on Spotify and Apple Podcasts on top of the 150 hours in your plan.',
+  features: [
+    '250 more hours of published episodes per block',
+    'Lasts 30 days; renew any time to add another 30',
+    'Anyone on the team can buy it',
+    'If it runs out, nothing is deleted: you just cannot publish more until there is room',
+  ],
+  cta: 'Add podcast space',
+};
 
 export const FREE_PLAN = {
   name: 'Free',

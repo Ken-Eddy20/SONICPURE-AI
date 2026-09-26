@@ -255,6 +255,8 @@ export interface Show {
   /** Published audio online now, against the plan's limit. */
   hostingUsedSeconds: number;
   hostingLimitHours: number;
+  /** Extra podcast space bought on top of the plan, while it lasts. */
+  hostingAddon: { hours: number; until: string | null } | null;
 }
 
 /** One of the podcast or church accounts the user belongs to. */

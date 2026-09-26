@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { ArrowRight, Check, ShieldCheck, X } from 'lucide-react';
 import { TIER_DETAILS, type SubscriptionTier } from '../constants/subscriptionPlans';
 import {
+  HOSTING_ADDON_HOURS, HOSTING_ADDON_MAX_BLOCKS, HOSTING_ADDON_USD,
   PAYG_MAX_CREDITS, PAYG_MIN_CREDITS, TEAM_TOPUP_PACK_CREDITS, TEAM_TOPUP_MAX_PACKS, paygPriceUsd, teamTopupPriceUsd,
 } from '../shared/processing.js';
 
@@ -25,6 +26,8 @@ export default function SubscriptionModal({ isOpen, onClose, tier, isAuthenticat
   const details = TIER_DETAILS[tier];
   const isPayg = tier === 'payg';
   const isTeam = tier === 'team_topup';
+  const isSpace = tier === 'hosting_addon';
+  const [blocks, setBlocks] = useState(1);
   const [packs, setPacks] = useState(1);
   const [credits, setCredits] = useState(200);
   const [raw, setRaw] = useState('200');
@@ -73,12 +76,33 @@ export default function SubscriptionModal({ isOpen, onClose, tier, isAuthenticat
               <X className="h-4 w-4" />
             </button>
 
-            <p className="eyebrow text-accent">{isPayg || isTeam ? 'Top up' : 'Upgrade'}</p>
+            <p className="eyebrow text-accent">{isPayg || isTeam || isSpace ? 'Add' : 'Upgrade'}</p>
             <h2 id="sub-title" className="mt-2 text-2xl font-extrabold tracking-tight">{details.name}</h2>
             <p className="mt-1 text-sm text-muted">{details.description}</p>
 
             <div className="mt-6 rounded-2xl bg-sunken p-5">
-              {isTeam ? (
+              {isSpace ? (
+                <>
+                  <p className="text-xs font-semibold text-muted">How much extra space?</p>
+                  <div className="mt-2 grid grid-cols-4 gap-2">
+                    {Array.from({ length: HOSTING_ADDON_MAX_BLOCKS }, (_, i) => i + 1).map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setBlocks(n)}
+                        aria-pressed={blocks === n}
+                        className={`rounded-xl border py-2 text-sm font-bold transition-colors ${blocks === n ? 'border-accent bg-accent-soft text-ink' : 'border-line bg-surface hover:border-line-strong'}`}
+                      >
+                        +{n * HOSTING_ADDON_HOURS}h
+                      </button>
+                    ))}
+                  </div>
+                  <div className="mt-4 flex items-baseline justify-between">
+                    <span className="text-sm text-muted">+{blocks * HOSTING_ADDON_HOURS} hours for 30 days</span>
+                    <span className="text-3xl font-extrabold tracking-tight">{formatUsd(blocks * HOSTING_ADDON_USD)}</span>
+                  </div>
+                </>
+              ) : isTeam ? (
                 <>
                   <p className="text-xs font-semibold text-muted">How many packs of {TEAM_TOPUP_PACK_CREDITS} credits?</p>
                   <div className="mt-2 grid grid-cols-4 gap-2">
@@ -168,7 +192,7 @@ export default function SubscriptionModal({ isOpen, onClose, tier, isAuthenticat
               disabled={isPayg && !validAmount}
               onClick={() => {
                 onClose();
-                if (isAuthenticated) onCheckout?.(tier, isTeam ? packs * TEAM_TOPUP_PACK_CREDITS : isPayg ? credits : undefined);
+                if (isAuthenticated) onCheckout?.(tier, isSpace ? blocks : isTeam ? packs * TEAM_TOPUP_PACK_CREDITS : isPayg ? credits : undefined);
                 else onSignIn?.();
               }}
               className="btn-primary mt-6 w-full py-3.5"

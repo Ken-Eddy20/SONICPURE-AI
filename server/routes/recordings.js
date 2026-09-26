@@ -10,7 +10,7 @@ import { cloudinary } from '../../lib/cloudinary.js';
 import { HttpError, route, verifyAuth, iso, diskLog } from '../lib/http.js';
 import { resolveAccount } from '../lib/accounts.js';
 import { FREE_RECORDING_LIMIT } from '../../shared/processing.js';
-import { workingDeleteAt } from '../lib/retention.js';
+import { assertWorkingSpace, unusedDeleteAt, workingDeleteAt } from '../lib/retention.js';
 
 const recordings = () => adminDb.collection('recordings');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024, files: 2 } });
@@ -155,6 +155,7 @@ export default function recordingsRouter({ limiter }) {
       throw new HttpError(403, 'AI cleaning is a paid feature. Buy credits or upgrade to use it.', { upgrade: true });
     }
     const r = snap.data();
+    await assertWorkingSpace(account, r.durationSeconds || 0);
     const now = new Date();
     const fileRef = await adminDb.collection('audioFiles').add({
       userId: uid,
@@ -175,7 +176,7 @@ export default function recordingsRouter({ limiter }) {
       recordingId: snap.id,
       status: 'uploaded',
       createdAt: now,
-      deleteAt: workingDeleteAt(account.plan, now),
+      deleteAt: unusedDeleteAt(now),
     });
     res.status(201).json({ fileId: fileRef.id, durationSeconds: r.durationSeconds || 0 });
   }));

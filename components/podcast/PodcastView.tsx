@@ -138,7 +138,7 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
         <RecorderStudio plan={plan} showActive={showActive} showType={show?.type || null} onUpgrade={upgrade} />
       )}
       {current === 'setup' && setup}
-      {show && current === 'episodes' && <EpisodesTab show={show} onActivate={() => onChoosePlan(planFor(show))} onChanged={reload} />}
+      {show && current === 'episodes' && <EpisodesTab show={show} onActivate={() => onChoosePlan(planFor(show))} onAddSpace={() => onChoosePlan('hosting_addon')} onChanged={reload} />}
       {show && current === 'team' && <TeamTab show={show} members={members} onChanged={reload} />}
       {show && current === 'settings' && <SettingsTab show={show} onChanged={reload} />}
     </div>

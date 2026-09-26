@@ -13,8 +13,8 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '../../lib/firebaseAdmin.js';
 import { cloudinary } from '../../lib/cloudinary.js';
-import { ORIGINAL_KEEP_HOURS, workingFileDays } from '../../shared/processing.js';
-import { diskLog, formatError } from './http.js';
+import { ORIGINAL_KEEP_HOURS, UNUSED_UPLOAD_DAYS, WORKING_SPACE_HOURS, workingFileDays } from '../../shared/processing.js';
+import { HttpError, diskLog, formatError } from './http.js';
 import { resolveAccount } from './accounts.js';
 
 const HOUR = 3600 * 1000;
@@ -26,6 +26,37 @@ export const workingDeleteAt = (plan, from = new Date()) => new Date(from.getTim
 export async function deleteAtFor(userId, from = new Date()) {
   const plan = await resolveAccount(userId).then((a) => a.plan).catch(() => 'free');
   return workingDeleteAt(plan, from);
+}
+
+/** Uploads that are never cleaned or published, and failed uploads, go sooner. */
+export const unusedDeleteAt = (from = new Date()) => new Date(from.getTime() + UNUSED_UPLOAD_DAYS * 24 * HOUR);
+
+const spaceLimitHours = (account) =>
+  account.kind === 'show' ? WORKING_SPACE_HOURS.team : account.plan === 'free' ? WORKING_SPACE_HOURS.free : WORKING_SPACE_HOURS.paid;
+
+/**
+ * Refuse a new upload when the account already holds its working-space limit of audio
+ * (uploads and cleaned files still stored; published episodes do not count).
+ */
+export async function assertWorkingSpace(account, addSeconds) {
+  const limitHours = spaceLimitHours(account);
+  const q = account.kind === 'show'
+    ? adminDb.collection('audioFiles').where('showId', '==', account.showId)
+    : adminDb.collection('audioFiles').where('userId', '==', account.userRef.id);
+  const snap = await q.get();
+  const usedSeconds = snap.docs.reduce((sum, d) => {
+    const f = d.data();
+    if (f.status === 'expired' || (account.kind !== 'show' && f.showId)) return sum;
+    return sum + Number(f.processedDurationSeconds || f.durationSeconds || 0);
+  }, 0);
+  if (usedSeconds + Number(addSeconds || 0) > limitHours * 3600) {
+    const used = usedSeconds / 3600;
+    throw new HttpError(
+      409,
+      `Your working space is full: ${used < 10 ? used.toFixed(1) : Math.round(used)} of ${limitHours} hours of files are waiting. Download, publish or delete finished files to make room.`,
+      { code: 'WORKING_SPACE_FULL' },
+    );
+  }
 }
 
 export const originalDeleteAt = (from = new Date()) => new Date(from.getTime() + ORIGINAL_KEEP_HOURS * HOUR);

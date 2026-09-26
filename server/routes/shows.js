@@ -13,7 +13,7 @@ import { HttpError, route, verifyAuth, iso, diskLog, formatError } from '../lib/
 import { deleteHosted, hostEpisode } from '../lib/hosting.js';
 import { getAccessibleFile } from '../lib/accounts.js';
 import { buildPodcastFeed } from '../lib/podcast.js';
-import { PODCAST_CATEGORIES, SHOW_TYPE_IDS, hostingHours, isShowPlan, showMaxMembers, showType } from '../../shared/processing.js';
+import { PODCAST_CATEGORIES, SHOW_TYPE_IDS, hostingAddonHours, isShowPlan, showHostingHours, showMaxMembers, showType } from '../../shared/processing.js';
 
 const shows = () => adminDb.collection('shows');
 const episodes = () => adminDb.collection('episodes');
@@ -74,7 +74,8 @@ function serializeShow(id, s, role, feedUrl, usedSeconds = 0) {
     podcast: s.podcast || {},
     feedUrl,
     hostingUsedSeconds: Math.round(usedSeconds),
-    hostingLimitHours: hostingHours(s.plan),
+    hostingLimitHours: showHostingHours(s),
+    hostingAddon: hostingAddonHours(s) ? { hours: hostingAddonHours(s), until: iso(s.hostingAddon.until) } : null,
   };
 }
 
@@ -372,11 +373,11 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
       if (!isShowPlan(show.plan)) throw new HttpError(402, 'Activate the Podcast or Church plan to publish.', { upgrade: true });
       const file = (await adminDb.collection('audioFiles').doc(episode.fileId).get()).data();
       const source = publishSource(file);
-      const limit = hostingHours(show.plan) * 3600;
+      const limit = showHostingHours(show) * 3600;
       const used = await hostedSeconds(episode.showId, ref.id);
       const seconds = Number(file.processedDurationSeconds || file.durationSeconds || 0);
       if (used + seconds > limit) {
-        throw new HttpError(409, `Your podcast has ${Math.round(used / 3600)} of ${limit / 3600} hours online. Unpublish or delete an older episode to make room.`);
+        throw new HttpError(409, `Your podcast has ${Math.round(used / 3600)} of ${limit / 3600} hours online. Unpublish an older episode, or add 250 more hours for $3 a month.`, { code: 'HOSTING_FULL' });
       }
       await ref.update({ ...updates, status: 'publishing', publishError: null, hostingSeconds: seconds });
       publishInBackground(ref, { ...episode, ...updates }, source, show);
@@ -477,9 +478,9 @@ function publishInBackground(ref, episode, sourceUrl, show) {
       });
       // Re-check the cap with the real length (another publish may have finished meanwhile).
       const used = await hostedSeconds(episode.showId, ref.id);
-      if (used + hosted.seconds > hostingHours(show.plan) * 3600) {
+      if (used + hosted.seconds > showHostingHours(show) * 3600) {
         await deleteHosted(hosted);
-        throw new Error('Your podcast is at its hours limit. Unpublish or delete an older episode to make room.');
+        throw new Error('Your podcast is at its hours limit. Unpublish an older episode, or add 250 more hours for $3 a month.');
       }
       const current = (await ref.get()).data();
       if (!current || current.status !== 'publishing') {

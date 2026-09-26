@@ -426,6 +426,15 @@ export const EPISODE_OPTIONS = {
 export const WORKING_FILE_DAYS = { free: 7, paid: 30 };
 export const workingFileDays = (plan) => (!plan || plan === 'free' ? WORKING_FILE_DAYS.free : WORKING_FILE_DAYS.paid);
 
+/** Uploads that are never cleaned or published, and failed uploads, go after this many days. */
+export const UNUSED_UPLOAD_DAYS = 3;
+
+/**
+ * Working space: hours of audio an account can hold at once in uploads and cleaned files
+ * (published episodes do not count). Stops unused uploads piling up, since they cost no credits.
+ */
+export const WORKING_SPACE_HOURS = { free: 2, paid: 10, team: 20 };
+
 /** The uncleaned original is kept this long after cleaning, for the before/after comparison. */
 export const ORIGINAL_KEEP_HOURS = 24;
 
@@ -436,6 +445,22 @@ export const ORIGINAL_KEEP_HOURS = 24;
 export const HOSTED_KBPS = 64;
 export const HOSTING_HOURS = { podcast: 150, church: 150 };
 export const hostingHours = (plan) => HOSTING_HOURS[plan] || 0;
+
+/** Extra podcast space: blocks of 250 hours for $3 each, for 30 days (renewable). */
+export const HOSTING_ADDON_HOURS = 250;
+export const HOSTING_ADDON_USD = 3;
+export const HOSTING_ADDON_DAYS = 30;
+export const HOSTING_ADDON_MAX_BLOCKS = 4;
+
+/** Extra hours a show has right now (0 once the add-on has run out). */
+export function hostingAddonHours(show, now = Date.now()) {
+  const a = show?.hostingAddon;
+  const until = a?.until?.toMillis ? a.until.toMillis() : a?.until ? new Date(a.until).getTime() : 0;
+  return a && until > now ? (Number(a.blocks) || 0) * HOSTING_ADDON_HOURS : 0;
+}
+
+/** Hours of published audio this show may have online: plan allowance plus any add-on. */
+export const showHostingHours = (show, now = Date.now()) => (isShowPlan(show?.plan) ? hostingHours(show.plan) + hostingAddonHours(show, now) : 0);
 
 export const MEETING_MAX_MINUTES = { free: 60, payg: 180, pro: 240, audio_master: 480, podcast: 240, church: 240 };
 /** Largest meeting file accepted (audio or video). */

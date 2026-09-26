@@ -27,11 +27,15 @@ import showsRouter, { recoverPublishing } from './routes/shows.js';
 import meetingsRouter from './routes/meetings.js';
 import recordingsRouter from './routes/recordings.js';
 import { minutesConfigured } from './lib/claude.js';
-import { deleteAtFor, originalDeleteAt, startRetentionSweeper, workingDeleteAt } from './lib/retention.js';
+import { assertWorkingSpace, deleteAtFor, originalDeleteAt, startRetentionSweeper, unusedDeleteAt } from './lib/retention.js';
 import { r2Configured } from './lib/hosting.js';
 import {
   isShowPlan,
   TEAM_TOPUP_PACK_CREDITS,
+  HOSTING_ADDON_HOURS,
+  HOSTING_ADDON_USD,
+  HOSTING_ADDON_DAYS,
+  HOSTING_ADDON_MAX_BLOCKS,
   TEAM_TOPUP_MAX_PACKS,
   teamTopupPriceUsd,
   PROFILES,
@@ -212,6 +216,11 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
       throw new HttpError(400, `This file is ${Math.ceil(durationSeconds / 60)} min. Your plan allows up to ${maxMins} min.`, { upgrade: true });
     }
 
+    await assertWorkingSpace(account, durationSeconds).catch(async (err) => {
+      if (extractedPublicId) await deleteAudio(extractedPublicId).catch(() => {});
+      throw err;
+    });
+
     const { secure_url, public_id } = await uploadAudio(req.file.buffer, userId);
 
     const now = new Date();
@@ -232,8 +241,8 @@ app.post('/api/audio/upload', uploadLimiter, upload.single('audio'), async (req,
       durationSeconds,
       status: 'uploaded',
       createdAt: now,
-      // Deleted automatically if it is never cleaned or published (no backups).
-      deleteAt: workingDeleteAt(account.plan, now),
+      // Deleted after a few days if it is never cleaned or published (no backups).
+      deleteAt: unusedDeleteAt(now),
     });
 
     res.json({
@@ -370,7 +379,7 @@ async function failAudioJob(fileRef, reason) {
       });
     }
     if (enhancesUsedToday(user) > 0) tx.update(userRef, { dailyEnhancesUsed: user.dailyEnhancesUsed - 1 });
-    tx.update(fileRef, { status: 'failed', error: reason, creditsRefunded: file.creditsUsed || 0, creditsUsed: 0 });
+    tx.update(fileRef, { status: 'failed', error: reason, creditsRefunded: file.creditsUsed || 0, creditsUsed: 0, deleteAt: unusedDeleteAt() });
   });
   if (file) {
     diskLog(`[Job Failed] [${fileRef.id}] ${reason}`);
@@ -543,7 +552,9 @@ app.get('/api/paystack/rate', async (req, res) => {
 // ─── Paystack ────────────────────────────────────────────────────
 
 const PAYSTACK_BASE = 'https://api.paystack.co';
-const PAID_TIERS = ['payg', 'pro', 'audio_master', 'podcast', 'church', 'team_topup'];
+const PAID_TIERS = ['payg', 'pro', 'audio_master', 'podcast', 'church', 'team_topup', 'hosting_addon'];
+/** Purchases for a team's shared account that any member may make (not plans). */
+const TEAM_EXTRAS = ['team_topup', 'hosting_addon'];
 const SHOW_TIERS = ['podcast', 'church'];
 
 function getPaystackSecretKey() {
@@ -574,8 +585,8 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
     if (!userSnap.exists) throw new HttpError(404, 'User not found');
     const userData = userSnap.data();
 
-    let planData = { name: 'Team top-up' };
-    if (tier !== 'team_topup') {
+    let planData = { name: tier === 'hosting_addon' ? 'Extra podcast space' : 'Team top-up' };
+    if (!TEAM_EXTRAS.includes(tier)) {
       const planSnap = await adminDb.collection('creditPlans').doc(tier).get();
       if (!planSnap.exists) throw new HttpError(400, 'Plan not found');
       planData = planSnap.data();
@@ -590,8 +601,8 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
       // Personal credits are not spent while the team plan is active, so they would sit unused.
       throw new HttpError(409, 'You are on a team plan, so your work uses the team\'s shared credits. Buy a team top-up instead.', { code: 'USE_TEAM_TOPUP' });
     }
-    if (tier === 'team_topup') {
-      if (!onActiveTeam) throw new HttpError(400, 'Team top-ups are for podcast or church teams with an active plan.');
+    if (TEAM_EXTRAS.includes(tier)) {
+      if (!onActiveTeam) throw new HttpError(400, 'This is for podcast or church teams with an active plan.');
       showId = userData.showId;
     }
     if (SHOW_TIERS.includes(tier)) {
@@ -603,6 +614,7 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
 
     let usdAmount;
     let creditsToAdd;
+    let hostingBlocks = null;
     if (tier === 'payg') {
       const customCredits = parseInt(req.body.customCredits, 10);
       if (!Number.isFinite(customCredits) || customCredits < PAYG_MIN_CREDITS || customCredits > PAYG_MAX_CREDITS) {
@@ -618,6 +630,13 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
       }
       creditsToAdd = credits;
       usdAmount = teamTopupPriceUsd(credits);
+    } else if (tier === 'hosting_addon') {
+      hostingBlocks = parseInt(req.body.blocks, 10);
+      if (!Number.isInteger(hostingBlocks) || hostingBlocks < 1 || hostingBlocks > HOSTING_ADDON_MAX_BLOCKS) {
+        throw new HttpError(400, `Choose 1 to ${HOSTING_ADDON_MAX_BLOCKS} blocks of ${HOSTING_ADDON_HOURS} hours.`);
+      }
+      creditsToAdd = 0;
+      usdAmount = hostingBlocks * HOSTING_ADDON_USD;
     } else {
       creditsToAdd = PLAN_CREDITS[tier];
       usdAmount = planData.price;
@@ -640,6 +659,7 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
         showId,
         creditsToAdd,
         usdAmount,
+        hostingBlocks,
         custom_fields: [
           { display_name: 'Plan', variable_name: 'plan', value: planData.name },
           { display_name: 'Credits', variable_name: 'credits', value: String(creditsToAdd) },
@@ -710,11 +730,11 @@ app.post('/api/paystack/webhook', express.raw({ type: 'application/json' }), asy
 async function applyPaymentOnce(userId, tier, txData) {
   if (!PAID_TIERS.includes(tier)) throw new Error(`Unknown tier: ${tier}`);
   const meta = txData.metadata || {};
-  const creditsAdded = tier === 'payg' || tier === 'team_topup' ? Number(meta.creditsToAdd) || 0 : PLAN_CREDITS[tier];
+  const creditsAdded = tier === 'hosting_addon' ? 0 : tier === 'payg' || tier === 'team_topup' ? Number(meta.creditsToAdd) || 0 : PLAN_CREDITS[tier];
 
   const txRef = adminDb.collection('transactions').doc(String(txData.reference));
   const userRef = adminDb.collection('users').doc(userId);
-  const showRef = (SHOW_TIERS.includes(tier) || tier === 'team_topup') && meta.showId ? adminDb.collection('shows').doc(meta.showId) : null;
+  const showRef = (SHOW_TIERS.includes(tier) || TEAM_EXTRAS.includes(tier)) && meta.showId ? adminDb.collection('shows').doc(meta.showId) : null;
 
   await adminDb.runTransaction(async (tx) => {
     const reads = [tx.get(txRef), tx.get(userRef)];
@@ -732,6 +752,13 @@ async function applyPaymentOnce(userId, tier, txData) {
       if (tier === 'team_topup') {
         // Extra credits only: the plan and renewal date stay as they are.
         tx.update(showRef, { credits: Math.max(0, Number(show.credits || 0)) + creditsAdded });
+      } else if (tier === 'hosting_addon') {
+        // 30 more days of extra space; renewing early adds to the time left. The block count is what was just bought.
+        const current = show.hostingAddon?.until?.toDate?.() || null;
+        const from = current && current > now ? current : now;
+        tx.update(showRef, {
+          hostingAddon: { blocks: Number(meta.hostingBlocks) || 1, until: new Date(from.getTime() + HOSTING_ADDON_DAYS * 864e5) },
+        });
       } else tx.update(showRef, {
         plan: tier,
         credits: Math.max(0, Number(show.credits || 0)) + creditsAdded,
@@ -764,6 +791,7 @@ async function applyPaymentOnce(userId, tier, txData) {
       currency: txData.currency || 'GHS',
       usdAmount: meta.usdAmount ?? null,
       creditsAdded,
+      hostingBlocks: meta.hostingBlocks ?? null,
       plan: tier,
       status: 'success',
       paystackTransactionId: txData.id,

@@ -12,7 +12,7 @@ import type { SubscriptionTier } from './constants/subscriptionPlans';
 import type { Plan } from './services/api';
 import { PLAN_IDS, isShowPlan } from './shared/processing.js';
 
-const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master', 'podcast', 'church', 'team_topup'];
+const TIERS: SubscriptionTier[] = ['payg', 'pro', 'audio_master', 'podcast', 'church', 'team_topup', 'hosting_addon'];
 
 interface Checkout {
   tier: SubscriptionTier;

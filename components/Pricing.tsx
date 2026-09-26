@@ -92,6 +92,11 @@ function TeamPlans({ currentPlan, onChoose }: { currentPlan?: Plan | null; onCho
                   Need less? Top up 350 credits for $10
                 </button>
               )}
+              {current && (
+                <button type="button" onClick={() => onChoose('hosting_addon')} className="mt-1 text-sm font-semibold text-accent hover:underline">
+                  More podcast space: +250 hours for $3/month
+                </button>
+              )}
             </div>
           );
         })}

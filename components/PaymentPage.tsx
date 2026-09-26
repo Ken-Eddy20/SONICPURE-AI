@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { AlertCircle, ArrowLeft, Check, CheckCircle2, Loader2, Lock, ShieldCheck } from 'lucide-react';
 import { TIER_DETAILS, type SubscriptionTier } from '../constants/subscriptionPlans';
 import { apiFetch, ApiError } from '../services/api';
-import { paygPriceUsd, teamTopupPriceUsd } from '../shared/processing.js';
+import { HOSTING_ADDON_HOURS, HOSTING_ADDON_USD, paygPriceUsd, teamTopupPriceUsd } from '../shared/processing.js';
 import Logo from './ui/Logo';
 
 interface PaystackCallbacks {
@@ -35,10 +35,16 @@ function formatUsd(amount: number) {
 export default function PaymentPage({ tier, customCredits, userEmail, resumeReference, onBack }: PaymentPageProps) {
   const details = TIER_DETAILS[tier];
   const isTeam = tier === 'team_topup';
-  /** Buyer chooses the amount (Pay As You Go credits or team top-up packs). */
-  const isPayg = tier === 'payg' || isTeam;
-  const usd = isTeam ? teamTopupPriceUsd(customCredits || 0) : isPayg ? paygPriceUsd(customCredits || 0) : details.priceAmount;
-  const creditsLabel = isPayg ? `${(customCredits || 0).toLocaleString()} credits` : details.credits;
+  /** Extra podcast space: `customCredits` carries the number of 250-hour blocks. */
+  const isSpace = tier === 'hosting_addon';
+  /** Buyer chooses the amount (Pay As You Go credits, team top-up packs or space blocks). */
+  const isPayg = tier === 'payg' || isTeam || isSpace;
+  const usd = isSpace
+    ? (customCredits || 1) * HOSTING_ADDON_USD
+    : isTeam ? teamTopupPriceUsd(customCredits || 0) : isPayg ? paygPriceUsd(customCredits || 0) : details.priceAmount;
+  const creditsLabel = isSpace
+    ? `+${(customCredits || 1) * HOSTING_ADDON_HOURS} hours for 30 days`
+    : isPayg ? `${(customCredits || 0).toLocaleString()} credits` : details.credits;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +88,7 @@ export default function PaymentPage({ tier, customCredits, userEmail, resumeRefe
       const callbackUrl = `${window.location.origin}${window.location.pathname}?${params}`;
       const init = await apiFetch<{ access_code: string; authorization_url: string; reference: string }>('/api/paystack/initialize', {
         method: 'POST',
-        body: JSON.stringify({ tier, customCredits: isPayg ? customCredits : undefined, callbackUrl }),
+        body: JSON.stringify({ tier, customCredits: isPayg && !isSpace ? customCredits : undefined, blocks: isSpace ? customCredits || 1 : undefined, callbackUrl }),
       });
 
       if (window.PaystackPop) {
@@ -113,8 +119,9 @@ export default function PaymentPage({ tier, customCredits, userEmail, resumeRefe
           </span>
           <h1 className="mt-6 text-2xl font-extrabold tracking-tight">Payment confirmed</h1>
           <p className="mt-2 text-muted">
-            {creditsAdded.toLocaleString()} credits are now in {isTeam ? "your team's shared pool" : 'your account'}
-            {isPayg ? '.' : `, and you're on ${details.name}.`}
+            {isSpace
+              ? `Your podcast now has ${(customCredits || 1) * HOSTING_ADDON_HOURS} more hours of space for 30 days.`
+              : <>{creditsAdded.toLocaleString()} credits are now in {isTeam ? "your team's shared pool" : 'your account'}{isPayg ? '.' : `, and you're on ${details.name}.`}</>}
           </p>
           <button type="button" onClick={onBack} className="btn-primary mt-8 w-full py-3.5">
             Back to the studio
