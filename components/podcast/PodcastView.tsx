@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, AudioLines, Building2, Church as ChurchIcon, Loader2, Mic2, Plus, Podcast, Radio, Settings, Users } from 'lucide-react';
+import { ArrowLeft, AudioLines, Building2, Church as ChurchIcon, Loader2, LogOut, Mic2, Plus, Podcast, Radio, Settings, Settings2, Users } from 'lucide-react';
 import {
-  ApiError, createShow, getShow, joinShow, switchShow, type Plan, type Show, type ShowAccount, type ShowMember, type ShowType,
+  ApiError, createShow, getShow, joinShow, leaveShow, switchShow, type Plan, type Show, type ShowAccount, type ShowMember, type ShowType,
 } from '../../services/api';
 import type { SubscriptionTier } from '../../constants/subscriptionPlans';
 import { SHOW_TYPES, showType } from '../../shared/processing.js';
@@ -62,6 +62,42 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
     }
   };
 
+  /** Leave any account you are a member of (owners delete from settings instead). */
+  const leaveAccount = async (a: ShowAccount) => {
+    if (!window.confirm(`Leave ${a.name}? You will lose access to its recordings and credits.`)) return;
+    setSwitching(a.id);
+    try {
+      await leaveShow(a.id);
+      await reload();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not leave that account.');
+    } finally {
+      setSwitching(null);
+    }
+  };
+
+  /** Open an account's settings (where the owner can rename or delete it). */
+  const manageAccount = async (id: string) => {
+    if (id !== show?.id) await openAccount(id);
+    setHub(false);
+    setTab('settings');
+  };
+
+  /** Stop working in any team account: work, uploads and credits go back to your own. */
+  const workAlone = async () => {
+    setSwitching('none');
+    try {
+      await switchShow(null);
+      await reload();
+      setHub(false);
+      setTab('recorder');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not switch.');
+    } finally {
+      setSwitching(null);
+    }
+  };
+
   if (show === undefined) {
     return (
       <div className="grid place-items-center py-24">
@@ -83,7 +119,7 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
       ]
     : [
         ['recorder', 'Record & edit', AudioLines],
-        ['setup', 'Publish a podcast', Podcast],
+        ['setup', accounts.length ? 'Your accounts' : 'Publish a podcast', Podcast],
       ];
   const current = tabs.some(([id]) => id === tab) ? tab : 'recorder';
   const upgrade = (tier?: 'payg' | 'show') => {
@@ -97,6 +133,9 @@ export default function PodcastView({ plan, showActive, onChoosePlan }: Props) {
       currentId={show?.id || null}
       switching={switching}
       onOpen={openAccount}
+      onLeave={leaveAccount}
+      onManage={manageAccount}
+      onWorkAlone={show ? workAlone : undefined}
       onBack={show && hub ? () => setHub(false) : undefined}
       backLabel={show?.name}
       onDone={async () => {
@@ -180,7 +219,7 @@ function AccountBar({ accounts, currentId, switching, onOpen, onAdd }: {
         onClick={onAdd}
         className="flex items-center gap-1.5 rounded-full border border-dashed border-line-strong px-3 py-1.5 text-xs font-semibold text-muted hover:border-accent hover:text-ink"
       >
-        <Plus className="h-3.5 w-3.5" /> New church or podcast account
+        <Settings2 className="h-3.5 w-3.5" /> Manage or add accounts
       </button>
     </div>
   );
@@ -250,11 +289,15 @@ function ShowHeader({ show, onActivate, onTopUp }: { show: Show; onActivate: () 
   );
 }
 
-function ShowSetup({ accounts, currentId, switching, onOpen, onBack, backLabel, onDone, error }: {
+function ShowSetup({ accounts, currentId, switching, onOpen, onLeave, onManage, onWorkAlone, onBack, backLabel, onDone, error }: {
   accounts: ShowAccount[];
   currentId: string | null;
   switching: string | null;
   onOpen: (id: string) => void;
+  onLeave: (a: ShowAccount) => void;
+  onManage: (id: string) => void;
+  /** Present while an account is open: go back to working with your own plan and credits. */
+  onWorkAlone?: () => void;
   onBack?: () => void;
   backLabel?: string;
   onDone: () => void;
@@ -294,7 +337,10 @@ function ShowSetup({ accounts, currentId, switching, onOpen, onBack, backLabel, 
       {accounts.length > 0 && (
         <div className="card p-5 sm:p-6">
           <h2 className="text-lg font-bold">Your accounts</h2>
-          <p className="mt-0.5 text-sm text-muted">Open one to work in it. Recordings, credits and the podcast feed are kept separate for each.</p>
+          <p className="mt-0.5 text-sm text-muted">
+            Open one to work in it. Recordings, credits and the podcast feed are kept separate for each. Team members can leave with{' '}
+            <LogOut className="inline h-3.5 w-3.5" />; owners manage or delete theirs with <Settings className="inline h-3.5 w-3.5" />.
+          </p>
           <ul className="mt-4 grid gap-2 sm:grid-cols-2">
             {accounts.map((a) => {
               const Icon = TYPE_ICONS[a.type] || Radio;
@@ -308,17 +354,34 @@ function ShowSetup({ accounts, currentId, switching, onOpen, onBack, backLabel, 
                       {SHOW_TYPES[a.type]?.label} · {a.role === 'owner' ? 'Owner' : 'Team member'} · {a.active ? 'Plan active' : 'No plan yet'}
                     </span>
                   </span>
-                  {current ? (
-                    <span className="chip shrink-0 border-accent/30 bg-accent-soft text-accent">Open now</span>
-                  ) : (
-                    <button type="button" onClick={() => onOpen(a.id)} disabled={switching !== null} className="btn-ghost shrink-0 px-4 py-2 text-xs">
-                      {switching === a.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Open
-                    </button>
-                  )}
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {current ? (
+                      <span className="chip border-accent/30 bg-accent-soft text-accent">Open now</span>
+                    ) : (
+                      <button type="button" onClick={() => onOpen(a.id)} disabled={switching !== null} className="btn-primary px-4 py-2 text-xs">
+                        {switching === a.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Open
+                      </button>
+                    )}
+                    {a.role === 'owner' ? (
+                      <button type="button" onClick={() => onManage(a.id)} disabled={switching !== null} title="Settings: rename, podcast details, delete" aria-label={`Manage ${a.name}`} className="grid h-9 w-9 place-items-center rounded-full text-muted hover:bg-sunken hover:text-ink">
+                        <Settings className="h-4 w-4" />
+                      </button>
+                    ) : (
+                      <button type="button" onClick={() => onLeave(a)} disabled={switching !== null} title="Leave this team" aria-label={`Leave ${a.name}`} className="grid h-9 w-9 place-items-center rounded-full text-muted hover:bg-danger-soft hover:text-danger">
+                        <LogOut className="h-4 w-4" />
+                      </button>
+                    )}
+                  </span>
                 </li>
               );
             })}
           </ul>
+          {onWorkAlone && (
+            <button type="button" onClick={onWorkAlone} disabled={switching !== null} className="mt-4 text-xs font-semibold text-muted hover:text-ink">
+              {switching === 'none' && <Loader2 className="mr-1 inline h-3.5 w-3.5 animate-spin" />}
+              Close the open account and use SonicPure on your own plan and credits
+            </button>
+          )}
         </div>
       )}
 

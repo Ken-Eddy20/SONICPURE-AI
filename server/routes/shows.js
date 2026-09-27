@@ -30,6 +30,16 @@ const MAX_SHOWS_PER_USER = 5;
 /** Every show the user belongs to. `showId` is the one they are working in right now. */
 export const showIdsOf = (user) => [...new Set([...(user?.showIds || []), user?.showId].filter(Boolean))];
 
+/**
+ * Every show this person is a member of, straight from the shows' member lists (the source of
+ * truth). The user's own showIds list could miss accounts created before several accounts were
+ * allowed, so it is only a cache that GET /api/shows repairs.
+ */
+async function memberShows(uid) {
+  const snap = await adminDb.collection('shows').where('memberIds', 'array-contains', uid).get();
+  return snap.docs;
+}
+
 /** User doc update that drops one show and moves the active one to another if needed. */
 function detachUpdate(user, showId) {
   const remaining = showIdsOf(user).filter((id) => id !== showId);
@@ -153,13 +163,20 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
 
   router.get('/', route('Could not load your show', async (req, res) => {
     const { uid } = await verifyAuth(req);
-    const user = (await users().doc(uid).get()).data();
-    const ids = showIdsOf(user);
-    const snaps = ids.length ? await adminDb.getAll(...ids.map((id) => shows().doc(id))) : [];
+    const userRef = users().doc(uid);
+    const user = (await userRef.get()).data();
+    const snaps = await memberShows(uid);
     const accounts = snaps
-      .filter((d) => d.exists && (d.data().memberIds || []).includes(uid))
-      .map((d) => ({ id: d.id, name: d.data().name, type: d.data().type || 'podcast', role: d.data().ownerId === uid ? 'owner' : 'editor', active: isShowPlan(d.data().plan) }));
-    const snap = snaps.find((d) => d.id === user?.showId && d.exists && (d.data().memberIds || []).includes(uid));
+      .map((d) => ({ id: d.id, name: d.data().name, type: d.data().type || 'podcast', role: d.data().ownerId === uid ? 'owner' : 'editor', active: isShowPlan(d.data().plan) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    // Repair the cached list (and a stale open account) so billing and file access agree with membership.
+    const ids = snaps.map((d) => d.id);
+    const cached = showIdsOf(user);
+    const openId = ids.includes(user?.showId) ? user.showId : null;
+    if (user && (ids.length !== cached.length || ids.some((id) => !cached.includes(id)) || (user.showId || null) !== openId)) {
+      await userRef.update({ showIds: ids, showId: openId });
+    }
+    const snap = snaps.find((d) => d.id === openId);
     if (!snap) return res.json({ show: null, accounts });
     const s = snap.data();
     const membersSnap = await snap.ref.collection('members').get();
@@ -177,11 +194,12 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     const type = SHOW_TYPE_IDS.includes(req.body?.type) ? req.body.type : 'podcast';
     const t = showType(type);
     const ref = shows().doc();
+    const memberCount = (await memberShows(decoded.uid)).length;
     await adminDb.runTransaction(async (tx) => {
       const userRef = users().doc(decoded.uid);
       const user = (await tx.get(userRef)).data();
       if (!user) throw new HttpError(404, 'User not found');
-      if (showIdsOf(user).length >= MAX_SHOWS_PER_USER) throw new HttpError(409, `You can be part of up to ${MAX_SHOWS_PER_USER} podcast or church accounts.`);
+      if (memberCount >= MAX_SHOWS_PER_USER) throw new HttpError(409, `You can be part of up to ${MAX_SHOWS_PER_USER} podcast or church accounts.`);
       const now = new Date();
       tx.set(ref, {
         name,
@@ -197,7 +215,8 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
         createdAt: now,
       });
       tx.set(ref.collection('members').doc(decoded.uid), { email: user.email || '', displayName: user.displayName || '', role: 'owner', joinedAt: now });
-      tx.update(userRef, { showId: ref.id, showIds: FieldValue.arrayUnion(ref.id) });
+      // Keep the account that was open before in the list too.
+      tx.update(userRef, { showId: ref.id, showIds: FieldValue.arrayUnion(ref.id, ...(user.showId ? [user.showId] : [])) });
     });
     res.status(201).json({ id: ref.id });
   }));
@@ -208,19 +227,20 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     const found = await shows().where('inviteCode', '==', code).limit(1).get();
     if (found.empty) throw new HttpError(404, 'That invite code is not valid. Ask the account owner for a new one.');
     const ref = found.docs[0].ref;
+    const memberCount = (await memberShows(uid)).length;
     await adminDb.runTransaction(async (tx) => {
       const userRef = users().doc(uid);
       const [user, show] = [(await tx.get(userRef)).data(), (await tx.get(ref)).data()];
       if (!user) throw new HttpError(404, 'User not found');
       if ((show.memberIds || []).includes(uid)) throw new HttpError(409, 'You are already on this team. Pick it from your accounts.');
-      if (showIdsOf(user).length >= MAX_SHOWS_PER_USER) throw new HttpError(409, `You can be part of up to ${MAX_SHOWS_PER_USER} podcast or church accounts.`);
+      if (memberCount >= MAX_SHOWS_PER_USER) throw new HttpError(409, `You can be part of up to ${MAX_SHOWS_PER_USER} podcast or church accounts.`);
       const max = showMaxMembers(show.plan);
       if ((show.memberIds || []).length >= max) {
         throw new HttpError(409, `This team is full (${max} people on the current plan).`);
       }
       tx.update(ref, { memberIds: FieldValue.arrayUnion(uid) });
       tx.set(ref.collection('members').doc(uid), { email: user.email || '', displayName: user.displayName || '', role: 'editor', joinedAt: new Date() });
-      tx.update(userRef, { showId: ref.id, showIds: FieldValue.arrayUnion(ref.id) });
+      tx.update(userRef, { showId: ref.id, showIds: FieldValue.arrayUnion(ref.id, ...(user.showId ? [user.showId] : [])) });
     });
     res.json({ id: ref.id });
   }));
@@ -239,9 +259,19 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     res.json({ success: true });
   }));
 
+  // Leave the open account, or any other one you are in ({ id }).
   router.post('/leave', route('Could not leave', async (req, res) => {
     const { uid } = await verifyAuth(req);
-    const { ref, role } = await myShow(uid);
+    let ref;
+    let role;
+    if (req.body?.id) {
+      ref = shows().doc(String(req.body.id));
+      const show = (await ref.get()).data();
+      if (!show || !(show.memberIds || []).includes(uid)) throw new HttpError(404, 'You are not part of that account.');
+      role = show.ownerId === uid ? 'owner' : 'editor';
+    } else {
+      ({ ref, role } = await myShow(uid));
+    }
     if (role === 'owner') throw new HttpError(400, 'The owner cannot leave. Delete the account instead.');
     await removeMember(ref, uid);
     res.json({ success: true });

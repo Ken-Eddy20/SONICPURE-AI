@@ -324,7 +324,9 @@ export const switchShow = (id: string | null) =>
 export const createShow = (name: string, type: ShowType) =>
   apiFetch<{ id: string }>('/api/shows', { method: 'POST', body: JSON.stringify({ name, type }) });
 export const joinShow = (code: string) => apiFetch<{ id: string }>('/api/shows/join', { method: 'POST', body: JSON.stringify({ code }) });
-export const leaveShow = () => apiFetch<{ success: boolean }>('/api/shows/leave', { method: 'POST' });
+/** Leave the open account, or another one you are in. */
+export const leaveShow = (id?: string) =>
+  apiFetch<{ success: boolean }>('/api/shows/leave', { method: 'POST', body: JSON.stringify(id ? { id } : {}) });
 export const removeShowMember = (uid: string) => apiFetch<{ success: boolean }>(`/api/shows/members/${uid}`, { method: 'DELETE' });
 export const deleteShow = (confirmName: string) =>
   apiFetch<{ success: boolean }>('/api/shows', { method: 'DELETE', body: JSON.stringify({ confirmName }) });
