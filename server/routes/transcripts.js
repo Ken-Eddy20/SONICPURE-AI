@@ -7,7 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { adminDb } from '../../lib/firebaseAdmin.js';
 import { HttpError, route, verifyAuth, diskLog, formatError, iso } from '../lib/http.js';
-import { chargeAndCreate, getAccessibleFile, refundJob } from '../lib/accounts.js';
+import { assertFileInOpenAccount, chargeAndCreate, getAccessibleFile, refundJob } from '../lib/accounts.js';
 import { transcribeChunk, translateText, mapLimit, khayaConfigured } from '../lib/khaya.js';
 import { makeWorkDir, cleanupDir, downloadTo, speechChunks } from '../lib/media.js';
 import {
@@ -130,6 +130,7 @@ export default function transcriptsRouter({ limiter }) {
       throw new HttpError(400, 'That translation is not available. Translate to or from English.');
     }
     const { data: file } = await getAccessibleFile(fileId, uid);
+    await assertFileInOpenAccount(file, uid);
     if (['uploading', 'uploaded', 'processing', 'finalizing'].includes(file.status)) {
       throw new HttpError(409, 'Wait for this file to finish cleaning first.');
     }

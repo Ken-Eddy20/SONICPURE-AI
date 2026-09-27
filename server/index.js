@@ -21,7 +21,7 @@ import { extractAudioFromVideo } from '../lib/extractAudio.js';
 import { parseBuffer } from 'music-metadata';
 import { startCleanvoiceJob, checkCleanvoiceJob, extractInsights, cleanvoiceCredits } from './lib/cleanvoice.js';
 import { HttpError, verifyAuth, sendError, diskLog, formatError, getQuotaDayKey, toDate, iso } from './lib/http.js';
-import { resolveAccount, billedTo, billingRefFor, getAccessibleFile, refundJob } from './lib/accounts.js';
+import { resolveAccount, billedTo, billingRefFor, getAccessibleFile, refundJob, assertFileInOpenAccount } from './lib/accounts.js';
 import { khayaConfigured } from './lib/khaya.js';
 import transcriptsRouter from './routes/transcripts.js';
 import captionsRouter from './routes/captions.js';
@@ -318,7 +318,8 @@ app.post('/api/audio/process', uploadLimiter, async (req, res) => {
     if (!fileId || !PROFILES[feature]) throw new HttpError(400, 'fileId and a valid feature are required');
     const options = normalizeOptions(req.body.options);
 
-    const { ref: fileRef } = await getAccessibleFile(fileId, userId);
+    const { ref: fileRef, data: fileData } = await getAccessibleFile(fileId, userId);
+    await assertFileInOpenAccount(fileData, userId);
 
     const job = await adminDb.runTransaction(async (tx) => {
       const account = await resolveAccount(userId, tx);
@@ -367,6 +368,8 @@ app.post('/api/audio/process', uploadLimiter, async (req, res) => {
         options,
         creditsUsed: cost,
         billedTo: billedTo(account),
+        // A personal upload cleaned with team credits becomes the team's file.
+        showId: account.kind === 'show' ? account.showId : file.showId || null,
         qualityLevel,
         stage: 'Queued',
         percent: 2,
@@ -424,8 +427,11 @@ async function failAudioJob(fileRef, reason) {
     const user = (await tx.get(userRef)).data() || {};
     // Older jobs have no billedTo; they were billed to the uploader.
     const billing = file.billedTo || { kind: 'user', id: file.userId };
-    if (file.creditsUsed > 0) {
-      tx.update(billingRefFor(billing), {
+    const billingRef = billingRefFor(billing);
+    // The team may have been deleted since; then there is no pool to refund into.
+    const poolExists = file.creditsUsed > 0 ? (await tx.get(billingRef)).exists : false;
+    if (file.creditsUsed > 0 && poolExists) {
+      tx.update(billingRef, {
         credits: FieldValue.increment(file.creditsUsed),
         creditsUsedThisMonth: FieldValue.increment(-file.creditsUsed),
       });
@@ -649,6 +655,13 @@ app.post('/api/paystack/initialize', paymentLimiter, async (req, res) => {
     const onActiveTeam = Boolean(activeShow && isShowPlan(activeShow.plan) && (activeShow.memberIds || []).includes(userId));
 
     let showId = null;
+    if ((tier === 'pro' || tier === 'audio_master') && onActiveTeam) {
+      throw new HttpError(
+        409,
+        `You are working in ${activeShow.name}, so your work uses its shared credits. A personal plan is only used when no team account is open: go to Podcast → Manage or add accounts → "Close the open account", then buy it.`,
+        { code: 'CLOSE_TEAM_FIRST' },
+      );
+    }
     if (tier === 'payg' && onActiveTeam) {
       // Personal credits are not spent while the team plan is active, so they would sit unused.
       throw new HttpError(409, 'You are on a team plan, so your work uses the team\'s shared credits. Buy a team top-up instead.', { code: 'USE_TEAM_TOPUP' });

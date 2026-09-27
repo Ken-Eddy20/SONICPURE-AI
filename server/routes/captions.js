@@ -8,7 +8,7 @@ import path from 'path';
 import { adminDb } from '../../lib/firebaseAdmin.js';
 import { uploadVideoFile } from '../../lib/cloudinary.js';
 import { HttpError, route, verifyAuth, diskLog, formatError, iso } from '../lib/http.js';
-import { chargeAndCreate, getAccessibleFile, refundJob } from '../lib/accounts.js';
+import { assertFileInOpenAccount, chargeAndCreate, getAccessibleFile, refundJob } from '../lib/accounts.js';
 import { makeWorkDir, cleanupDir, downloadTo, probe, burnCaptions } from '../lib/media.js';
 import { buildAss } from '../lib/captions.js';
 import { deleteAtFor } from '../lib/retention.js';
@@ -111,6 +111,7 @@ export default function captionsRouter({ limiter }) {
     if (useTranslation && !transcript.translation) throw new HttpError(400, 'This transcript has no translation.');
 
     const { data: file } = await getAccessibleFile(transcript.fileId, uid);
+    await assertFileInOpenAccount(file, uid);
     if (file.sourceType !== 'video') throw new HttpError(400, 'Captions can only be added to video files.');
     if (!videoFor(file, transcript.timeline)) {
       throw new HttpError(400, 'This transcript was made from the cleaned audio. Make a new transcript for this video.');

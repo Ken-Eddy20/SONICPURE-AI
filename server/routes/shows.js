@@ -11,7 +11,7 @@ import { adminDb } from '../../lib/firebaseAdmin.js';
 import { uploadArtwork } from '../../lib/cloudinary.js';
 import { HttpError, route, verifyAuth, iso, diskLog, formatError } from '../lib/http.js';
 import { deleteHosted, hostEpisode } from '../lib/hosting.js';
-import { getAccessibleFile } from '../lib/accounts.js';
+import { assertFileInOpenAccount, getAccessibleFile } from '../lib/accounts.js';
 import { buildPodcastFeed } from '../lib/podcast.js';
 import { PODCAST_CATEGORIES, SHOW_TYPE_IDS, hostingAddonHours, isShowPlan, showHostingHours, showMaxMembers, showType } from '../../shared/processing.js';
 
@@ -366,7 +366,8 @@ export default function showsRouter({ publicBaseUrl, siteUrl, serializeFile }) {
     const { ref: showRef } = await myShow(uid);
     const fields = episodeFields(req.body || {}, { partial: false });
     if (!fields.title) throw new HttpError(400, 'Give it a title.');
-    const { ref: fileRef } = await getAccessibleFile(String(req.body?.fileId || '-'), uid);
+    const { ref: fileRef, data: fileData } = await getAccessibleFile(String(req.body?.fileId || '-'), uid);
+    await assertFileInOpenAccount(fileData, uid);
     // Share the file with the rest of the team.
     await fileRef.update({ showId: showRef.id });
     const epRef = episodes().doc();

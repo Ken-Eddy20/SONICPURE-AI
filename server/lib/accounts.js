@@ -21,7 +21,9 @@ export async function resolveAccount(userId, tx = null) {
     const showRef = adminDb.collection('shows').doc(user.showId);
     const showSnap = await get(showRef);
     const show = showSnap.exists ? showSnap.data() : null;
-    if (show && isShowPlan(show.plan)) {
+    // Never bill a team the user is no longer in, even if their open-account pointer is stale.
+    const member = Boolean(show && (show.memberIds || []).includes(userId));
+    if (member && isShowPlan(show.plan)) {
       return {
         userRef,
         user,
@@ -39,10 +41,32 @@ export async function resolveAccount(userId, tx = null) {
     user,
     kind: 'user',
     plan: (user.plan || 'free').toLowerCase(),
-    showId: user.showId || null,
+    showId: user.showId && (await isMemberOf(user.showId, userId, get)) ? user.showId : null,
     billingRef: userRef,
     credits: Number(user.credits || 0),
   };
+}
+
+async function isMemberOf(showId, userId, get) {
+  const snap = await get(adminDb.collection('shows').doc(showId));
+  return Boolean(snap.exists && (snap.data().memberIds || []).includes(userId));
+}
+
+/**
+ * Anything that costs credits must happen in the account a file belongs to, so the right team
+ * pays. A file uploaded under a team can only be cleaned, transcribed, captioned or published
+ * while that team is the open account. Personal files (no team) can be used from anywhere.
+ */
+export async function assertFileInOpenAccount(file, userId) {
+  if (!file?.showId) return;
+  const user = (await adminDb.collection('users').doc(userId).get()).data();
+  if (user?.showId === file.showId) return;
+  const name = (await adminDb.collection('shows').doc(file.showId).get()).data()?.name || 'another account';
+  throw new HttpError(
+    409,
+    `This recording belongs to ${name}. Open that account first (Podcast → Manage or add accounts), so its own credits are used.`,
+    { code: 'WRONG_ACCOUNT', showId: file.showId },
+  );
 }
 
 export const billedTo = (account) => ({ kind: account.kind, id: account.billingRef.id });
