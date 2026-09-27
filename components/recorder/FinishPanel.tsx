@@ -32,6 +32,15 @@ interface Props {
   onUpgrade: (tier?: 'payg' | 'show') => void;
 }
 
+/** Phones and tablets share the file itself; computers share a link (their share panels rarely list Telegram or WhatsApp). */
+const isMobileDevice = () =>
+  /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+
+const shareUrls = (audioUrl: string, text: string) => ({
+  whatsapp: `https://wa.me/?text=${encodeURIComponent(`${text}\n${audioUrl}`)}`,
+  telegram: `https://t.me/share/url?url=${encodeURIComponent(audioUrl)}&text=${encodeURIComponent(text)}`,
+});
+
 const GENRES = ['Gospel', 'Sermon', 'Worship', 'Choir', 'Praise', 'Teaching', 'Podcast', 'Speech', 'Highlife', 'Afrobeats', 'Hiplife', 'Other'];
 
 type Busy = null | 'encode' | 'save' | 'whatsapp' | 'telegram' | 'clean' | 'publish';
@@ -41,6 +50,7 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [saved, setSaved] = useState<SavedRecording | null>(null);
+  const [copied, setCopied] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const cacheRef = useRef<{ key: string; blob: Blob } | null>(null);
   const coverInput = useRef<HTMLInputElement>(null);
@@ -107,13 +117,39 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
       return `Downloaded ${fileName} (${formatBytes(blob.size)}).`;
     });
 
-  const share = (app: 'whatsapp' | 'telegram') =>
-    run(app, async () => {
+  const share = (app: 'whatsapp' | 'telegram') => {
+    const text = meta.title || 'Recording';
+    const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
+    const mobile = isMobileDevice() && Boolean(nav.canShare);
+    // On a computer, open the tab now, while this still counts as the user's click: browsers block
+    // tabs opened later (after the MP3 is prepared and uploaded). It is pointed at the share page below.
+    const tab = mobile || saved ? null : window.open('', '_blank');
+    if (tab) {
+      tab.document.title = 'Preparing your audio…';
+      tab.document.body.innerHTML = '<p style="font:16px system-ui;padding:32px;color:#555">Preparing your audio for sharing…</p>';
+    }
+    return run(app, async () => {
+      if (!mobile) {
+        try {
+          const rec = await ensureSaved();
+          const url = shareUrls(rec.audioUrl, text)[app];
+          if (tab && !tab.closed) {
+            tab.opener = null;
+            tab.location.replace(url);
+          } else {
+            // Already saved (no waiting), or the tab was blocked: a direct navigation always works.
+            const win = window.open(url, '_blank');
+            if (!win) return `Your audio is ready. Use the ${app === 'whatsapp' ? 'WhatsApp' : 'Telegram'} link below to share it.`;
+          }
+          return `Opened ${app === 'whatsapp' ? 'WhatsApp' : 'Telegram'}. The links below work too.`;
+        } catch (err) {
+          tab?.close();
+          throw err;
+        }
+      }
       const blob = await buildMp3();
       const file = new File([blob], fileName, { type: 'audio/mpeg' });
-      const text = meta.title || 'Recording';
       // On phones, share the actual file straight into WhatsApp or Telegram.
-      const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
       if (nav.canShare?.({ files: [file] })) {
         try {
           await navigator.share({ files: [file], title: text, text });
@@ -126,14 +162,11 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
           throw err;
         }
       }
-      // On computers, share a link to the saved copy.
+      // This phone cannot share files: share a link to the saved copy instead.
       const rec = await ensureSaved();
-      const url = app === 'whatsapp'
-        ? `https://wa.me/?text=${encodeURIComponent(`${text}\n${rec.audioUrl}`)}`
-        : `https://t.me/share/url?url=${encodeURIComponent(rec.audioUrl)}&text=${encodeURIComponent(text)}`;
-      window.open(url, '_blank', 'noopener');
-      return 'Saved to your library and opened sharing.';
+      window.location.href = shareUrls(rec.audioUrl, text)[app];
     });
+  };
 
   const clean = () =>
     run('clean', async () => {
@@ -292,7 +325,27 @@ export default function FinishPanel({ sources, state, meta, coverUrl, onMetaChan
               <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line"><div className="h-full rounded-full bg-accent transition-[width]" style={{ width: `${progress * 100}%` }} /></div>
             </div>
           )}
-          <p className="mt-3 text-xs text-muted">On a phone, sharing sends the audio file itself. On a computer, it shares a link.</p>
+          {saved && (
+            <div className="mt-4 rounded-2xl border border-line bg-sunken p-3">
+              <p className="text-xs font-semibold text-muted">Share links (saved to your library)</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <a href={shareUrls(saved.audioUrl, meta.title || 'Recording').whatsapp} target="_blank" rel="noopener noreferrer" className="btn-ghost px-3 py-2 text-xs">
+                  <WhatsAppIcon /> Open WhatsApp
+                </a>
+                <a href={shareUrls(saved.audioUrl, meta.title || 'Recording').telegram} target="_blank" rel="noopener noreferrer" className="btn-ghost px-3 py-2 text-xs">
+                  <Send className="h-4 w-4 text-[#229ED9]" /> Open Telegram
+                </a>
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard.writeText(saved.audioUrl).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}
+                  className="btn-ghost px-3 py-2 text-xs"
+                >
+                  {copied ? <Check className="h-4 w-4 text-accent" /> : <CloudUpload className="h-4 w-4" />} {copied ? 'Copied' : 'Copy link'}
+                </button>
+              </div>
+            </div>
+          )}
+          <p className="mt-3 text-xs text-muted">On a phone, sharing sends the audio file itself. On a computer, it opens WhatsApp or Telegram with a link to the audio.</p>
         </div>
 
         <div className="card p-5 sm:p-6">
